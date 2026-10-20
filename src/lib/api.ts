@@ -115,6 +115,9 @@ export const api = {
   getAppInfo: () => call<Record<string, unknown>>("get_app_info"),
   listProjects: () => call<Project[]>("list_projects"),
   createProject: (input: Record<string, unknown>) => call<Project>("create_project", { input }),
+  updateProject: (projectId: string, input: Record<string, unknown>) =>
+    call<Project>("update_project", { projectId, input }),
+  deleteProject: (projectId: string) => call<void>("delete_project", { projectId }),
   listTasks: (projectId?: string) =>
     call<Task[]>("list_tasks", { projectId: projectId ?? null }),
   createTask: (input: Record<string, unknown>) => call<Task>("create_task", { input }),
@@ -157,6 +160,31 @@ export const api = {
   listActivity: (projectId?: string) =>
     call<ActivityEvent[]>("list_activity", { projectId: projectId ?? null }),
   listUnassigned: () => call<Array<Record<string, string>>>("list_unassigned"),
+  listUnassignedPage: (query: {
+    projectId?: string | null;
+    reason?: string | null;
+    search?: string | null;
+    conversation?: string | null;
+    page?: number;
+    pageSize?: number;
+  }) =>
+    call<{
+      items: Array<Record<string, string>>;
+      total: number;
+      page: number;
+      page_size: number;
+      reasons: string[];
+    }>("list_unassigned_page", {
+      query: {
+        project_id: query.projectId ?? null,
+        reason: query.reason ?? null,
+        search: query.search ?? null,
+        conversation: query.conversation ?? null,
+        page: query.page ?? 1,
+        page_size: query.pageSize ?? 20,
+      },
+    }),
+  dismissNoiseUnassigned: () => call<number>("dismiss_noise_unassigned"),
   assignUnassigned: (unassignedId: string, projectId: string, taskId: string) =>
     call<void>("assign_unassigned", { unassignedId, projectId, taskId }),
   addUsage: (input: Record<string, unknown>) => call<UsageRecord>("add_usage_record", { input }),

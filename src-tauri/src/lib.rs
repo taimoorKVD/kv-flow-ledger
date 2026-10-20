@@ -45,6 +45,9 @@ pub fn run() {
                 let _ = settings::set(&db, "ingest_token", &token);
             }
 
+            // Drop legacy empty-hook noise; only unknown workspaces stay in the review queue.
+            let _ = services::attribution::dismiss_noise_unassigned(&db);
+
             let state = AppState::new(db, resource_dir);
             let db_arc = state.db.clone();
             *state.ingest_listening.write() = true;
@@ -57,6 +60,8 @@ pub fn run() {
             commands::get_app_info,
             commands::list_projects,
             commands::create_project,
+            commands::update_project,
+            commands::delete_project,
             commands::list_tasks,
             commands::create_task,
             commands::update_task_title,
@@ -67,6 +72,8 @@ pub fn run() {
             commands::get_project_financials,
             commands::list_activity,
             commands::list_unassigned,
+            commands::list_unassigned_page,
+            commands::dismiss_noise_unassigned,
             commands::assign_unassigned,
             commands::add_usage_record,
             commands::import_usage_csv,

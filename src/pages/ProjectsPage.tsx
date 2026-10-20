@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Plus } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { dur } from "@/lib/format";
 import { useAppStore } from "@/stores/appStore";
@@ -12,6 +12,7 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   const setToast = useAppStore((s) => s.setToast);
 
   const [showProject, setShowProject] = useState(false);
+  const [editingProject, setEditingProject] = useState(false);
   const [pName, setPName] = useState("");
   const [pClient, setPClient] = useState("");
   const [pWorkspace, setPWorkspace] = useState("");
@@ -27,6 +28,7 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   >([]);
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
+  const [deleting, setDeleting] = useState(false);
 
   const project = projects.find((p) => p.id === selectedProjectId);
   const ccy = project?.currency || projCurrency || "USD";
@@ -47,23 +49,68 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
     }
   }, [project]);
 
-  async function createProject() {
+  function openCreateModal() {
+    setEditingProject(false);
+    setPName("");
+    setPClient("");
+    setPWorkspace("");
+    setPBudget("0");
+    setPCurrency("USD");
+    setShowProject(true);
+  }
+
+  function openEditModal() {
+    if (!project) return;
+    setEditingProject(true);
+    setPName(project.name);
+    setPClient(project.client ?? "");
+    setPWorkspace(project.workspaces[0] ?? "");
+    setPBudget(String(project.contracted_budget_minor / 100));
+    setPCurrency(project.currency || "USD");
+    setShowProject(true);
+  }
+
+  async function saveProject() {
     if (!pName.trim()) return setToast("Enter project name");
-    const created = await api.createProject({
+    const input = {
       name: pName.trim(),
       client: pClient.trim() || null,
       description: null,
       git_repository: null,
-      billing_model: "fixed_price",
+      billing_model: project?.billing_model || "fixed_price",
       contracted_budget_minor: Math.round(Number(pBudget || 0) * 100),
       currency: pCurrency,
       workspaces: pWorkspace.trim() ? [pWorkspace.trim()] : [],
-    });
-    setSelectedProjectId(created.id);
-    setShowProject(false);
-    setPName("");
-    setToast(`Project created (${pCurrency})`);
+    };
+    if (editingProject) {
+      if (!selectedProjectId) return;
+      await api.updateProject(selectedProjectId, input);
+      setShowProject(false);
+      setToast("Project updated");
+    } else {
+      const created = await api.createProject(input);
+      setSelectedProjectId(created.id);
+      setShowProject(false);
+      setToast(`Project created (${pCurrency})`);
+    }
     await onRefresh();
+  }
+
+  async function deleteSelectedProject() {
+    if (!project || !selectedProjectId) return;
+    const ok = window.confirm(
+      `Delete project “${project.name}”? Tasks and workspace mappings for this project will be removed. Activity history stays but becomes unassigned.`
+    );
+    if (!ok) return;
+    setDeleting(true);
+    try {
+      await api.deleteProject(selectedProjectId);
+      setSelectedProjectId(null);
+      setToast("Project deleted");
+      await onRefresh();
+    } finally {
+      setDeleting(false);
+    }
   }
 
   async function saveFinances() {
@@ -95,8 +142,24 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap gap-2">
-        <button type="button" className="btn" onClick={() => setShowProject(true)}>
+        <button type="button" className="btn" onClick={openCreateModal}>
           <Plus className="h-4 w-4" /> New project
+        </button>
+        <button
+          type="button"
+          className="btn-ghost"
+          disabled={!project}
+          onClick={openEditModal}
+        >
+          <Pencil className="h-4 w-4" /> Edit project
+        </button>
+        <button
+          type="button"
+          className="btn-ghost"
+          disabled={!project || deleting}
+          onClick={() => void deleteSelectedProject()}
+        >
+          <Trash2 className="h-4 w-4" /> Delete project
         </button>
       </div>
 
@@ -183,6 +246,7 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
               <div>
                 <div className="label">Project</div>
                 <div className="mt-1 font-semibold">{project.name}</div>
+                {project.client && <div className="tiny mt-1">Client: {project.client}</div>}
                 <div className="tiny mt-1">
                   Workspaces: {project.workspaces.length ? project.workspaces.join(", ") : "None mapped"}
                 </div>
@@ -222,14 +286,19 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
       <div className="panel p-5">
         <h2 className="font-bold">Project attribution policy</h2>
         <p className="mt-2 text-sm text-muted">
-          Workspace → project. A new or continuing Cursor chat in a mapped workspace auto-creates or
-          monitors a task linked to that conversation. Unmapped workspaces remain unassigned until reviewed.
+          Map a workspace folder on a project once. Cursor chats in that folder auto-create tasks;
+          workspace-only activity uses a General task. Only unknown workspaces appear below for review.
         </p>
         <UnassignedReview onRefresh={onRefresh} />
       </div>
 
       {showProject && (
-        <Modal title="Create project" onClose={() => setShowProject(false)} onSave={() => void createProject()}>
+        <Modal
+          title={editingProject ? "Edit project" : "Create project"}
+          onClose={() => setShowProject(false)}
+          onSave={() => void saveProject()}
+          saveLabel={editingProject ? "Save changes" : "Create"}
+        >
           <Field label="Name" value={pName} onChange={setPName} />
           <Field label="Client" value={pClient} onChange={setPClient} />
           <Field label="Workspace directory (absolute path)" value={pWorkspace} onChange={setPWorkspace} />
@@ -255,26 +324,137 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
 }
 
 function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
-  const [items, setItems] = useState<Array<Record<string, string>>>([]);
   const tasks = useAppStore((s) => s.tasks);
   const selectedProjectId = useAppStore((s) => s.selectedProjectId);
   const setToast = useAppStore((s) => s.setToast);
 
+  const [items, setItems] = useState<Array<Record<string, string>>>([]);
+  const [reasons, setReasons] = useState<string[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(10);
+  const [reason, setReason] = useState("all");
+  const [conversation, setConversation] = useState("all");
+  const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function load(nextPage = page) {
+    if (!selectedProjectId) {
+      setItems([]);
+      setTotal(0);
+      setReasons([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await api.listUnassignedPage({
+        projectId: selectedProjectId,
+        reason: reason === "all" ? null : reason,
+        search: search.trim() || null,
+        conversation: conversation === "all" ? null : conversation,
+        page: nextPage,
+        pageSize,
+      });
+      setItems(res.items);
+      setTotal(res.total);
+      setPage(res.page);
+      setReasons(res.reasons ?? []);
+    } catch {
+      setItems([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
-    void api.listUnassigned().then(setItems).catch(() => setItems([]));
-  }, []);
+    void load(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when filters / project change
+  }, [reason, conversation, search, pageSize, selectedProjectId]);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
     <div className="mt-4 space-y-3">
-      <button
-        type="button"
-        className="btn-ghost"
-        onClick={() => void api.listUnassigned().then(setItems)}
-      >
-        Refresh unassigned
-      </button>
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="min-w-[160px] flex-1">
+          <label className="label">Search</label>
+          <input
+            className="field mt-1"
+            value={searchInput}
+            placeholder="Workspace or conversation"
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setSearch(searchInput.trim());
+            }}
+          />
+        </div>
+        <div>
+          <label className="label">Reason</label>
+          <select className="field mt-1" value={reason} onChange={(e) => setReason(e.target.value)}>
+            <option value="all">All reasons</option>
+            {reasons.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">Conversation</label>
+          <select
+            className="field mt-1"
+            value={conversation}
+            onChange={(e) => setConversation(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="with_conversation">With conversation</option>
+            <option value="without_conversation">Without conversation</option>
+          </select>
+        </div>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={() => {
+            setSearch(searchInput.trim());
+            void load(1);
+          }}
+        >
+          Apply
+        </button>
+        <button type="button" className="btn-ghost" onClick={() => void load(page)}>
+          Refresh
+        </button>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={async () => {
+            const n = await api.dismissNoiseUnassigned();
+            setToast(`Dismissed ${n} empty / insufficient-signal rows`);
+            await onRefresh();
+            await load(1);
+          }}
+        >
+          Dismiss empty noise
+        </button>
+      </div>
+
+      <p className="tiny">
+        {!selectedProjectId
+          ? "Select a project to review its unassigned activity."
+          : loading
+            ? "Loading…"
+            : `${total} pending for this project`}{" "}
+        · page {page} of {totalPages}
+      </p>
+
       {items.length === 0 ? (
-        <p className="tiny">No pending unassigned activity.</p>
+        <p className="tiny">
+          {!selectedProjectId
+            ? "Choose a project above."
+            : "No pending unassigned activity for this project."}
+        </p>
       ) : (
         items.map((item) => (
           <div key={item.id} className="soft flex flex-wrap items-center justify-between gap-3 p-3">
@@ -283,6 +463,9 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
               <div className="tiny">
                 {item.workspace_path || "—"} · {item.conversation_id || "no conversation"}
               </div>
+              <p className="tiny mt-1">
+                Add this path as a project workspace, or assign to an existing project task.
+              </p>
             </div>
             <button
               type="button"
@@ -293,7 +476,7 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
                 await api.assignUnassigned(item.id, selectedProjectId, tasks[0].id);
                 setToast("Assigned to first task in project");
                 await onRefresh();
-                setItems(await api.listUnassigned());
+                await load(page);
               }}
             >
               Assign to current project task
@@ -301,6 +484,25 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
           </div>
         ))
       )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="btn-ghost"
+          disabled={page <= 1 || loading}
+          onClick={() => void load(page - 1)}
+        >
+          Previous
+        </button>
+        <button
+          type="button"
+          className="btn-ghost"
+          disabled={page >= totalPages || loading}
+          onClick={() => void load(page + 1)}
+        >
+          Next
+        </button>
+      </div>
     </div>
   );
 }
@@ -334,11 +536,13 @@ function Modal({
   children,
   onClose,
   onSave,
+  saveLabel = "Save",
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   onSave: () => void;
+  saveLabel?: string;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#030913c9] p-4 backdrop-blur-sm">
@@ -350,7 +554,7 @@ function Modal({
             Cancel
           </button>
           <button type="button" className="btn" onClick={onSave}>
-            Save
+            {saveLabel}
           </button>
         </div>
       </div>

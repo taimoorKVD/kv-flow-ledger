@@ -34,7 +34,113 @@ pub fn fingerprint(event: &HookEventIn) -> String {
     hex::encode(hasher.finalize())
 }
 
+fn payload_str(payload: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(v) = payload.get(*key) {
+            if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn payload_string_array(payload: &serde_json::Value, keys: &[&str]) -> Option<Vec<String>> {
+    for key in keys {
+        if let Some(v) = payload.get(*key) {
+            if let Some(arr) = v.as_array() {
+                let out: Vec<String> = arr
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::trim).filter(|s| !s.is_empty()))
+                    .map(str::to_string)
+                    .collect();
+                if !out.is_empty() {
+                    return Some(out);
+                }
+            }
+            if let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                return Some(vec![s.to_string()]);
+            }
+        }
+    }
+    None
+}
+
+/// Fill missing top-level fields from nested Cursor payload (defensive).
+fn hydrate_event(event: &mut HookEventIn) {
+    if event.conversation_id.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+        event.conversation_id = payload_str(
+            &event.payload,
+            &[
+                "conversation_id",
+                "conversationId",
+                "session_id",
+                "sessionId",
+                "composer_id",
+                "composerId",
+            ],
+        );
+    }
+    if event.generation_id.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+        event.generation_id =
+            payload_str(&event.payload, &["generation_id", "generationId"]);
+    }
+    if event.model.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+        event.model = payload_str(&event.payload, &["model"]);
+    }
+    if event.model_id.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+        event.model_id = payload_str(&event.payload, &["model_id", "modelId"]);
+    }
+    if event.cursor_version.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+        event.cursor_version =
+            payload_str(&event.payload, &["cursor_version", "cursorVersion"]);
+    }
+    let roots_empty = event
+        .workspace_roots
+        .as_ref()
+        .map(|v| v.is_empty())
+        .unwrap_or(true);
+    if roots_empty {
+        event.workspace_roots = payload_string_array(
+            &event.payload,
+            &["workspace_roots", "workspaceRoots", "workspace_root", "cwd"],
+        );
+    }
+    if event.event_type == "unknown" || event.event_type.is_empty() {
+        if let Some(name) =
+            payload_str(&event.payload, &["hook_event_name", "hookEventName"])
+        {
+            event.event_type = name;
+        }
+    }
+}
+
+fn is_empty_noise(event: &HookEventIn) -> bool {
+    let no_conv = event
+        .conversation_id
+        .as_ref()
+        .map(|s| s.is_empty())
+        .unwrap_or(true);
+    let no_ws = event
+        .workspace_roots
+        .as_ref()
+        .map(|v| v.is_empty())
+        .unwrap_or(true);
+    let payload_empty = event.payload.as_object().map(|o| o.is_empty()).unwrap_or(true);
+    (event.event_type == "unknown" || event.event_type.is_empty()) && no_conv && no_ws && payload_empty
+}
+
 pub fn ingest_event(db: &Db, mut event: HookEventIn) -> AppResult<IngestOutcome> {
+    hydrate_event(&mut event);
+    if is_empty_noise(&event) {
+        return Ok(IngestOutcome {
+            accepted: false,
+            duplicate: false,
+            event_id: None,
+            message: "ignored_empty".into(),
+        });
+    }
+
     let fp = fingerprint(&event);
     let duplicate = db.with_conn(|conn| {
         let exists: Option<String> = conn.exec_first(
@@ -61,25 +167,38 @@ pub fn ingest_event(db: &Db, mut event: HookEventIn) -> AppResult<IngestOutcome>
         .workspace_roots
         .as_ref()
         .and_then(|v| v.first())
-        .cloned();
+        .map(|p| projects::normalize_path(p));
     let mut attr = attribution::resolve(
         db,
         event.conversation_id.as_deref(),
         workspace_path.as_deref(),
     )?;
 
-    // Chat-driven tasks: new conversation in a mapped workspace creates + links a task.
+    // Auto tasks: conversation → Chat · {id}; known workspace without chat → General.
     if attr.task_id.is_none() {
-        if let (Some(project_id), Some(cid)) =
-            (attr.project_id.clone(), event.conversation_id.clone())
-        {
-            let (pid, tid) = projects::ensure_task_for_conversation(db, &project_id, &cid)?;
-            attr.project_id = Some(pid);
-            attr.task_id = Some(tid);
-            attr.source = "auto_conversation".into();
-            attr.confidence = "high".into();
-            attr.unassigned_reason = None;
+        if let Some(project_id) = attr.project_id.clone() {
+            if let Some(cid) = event.conversation_id.clone() {
+                let (pid, tid) = projects::ensure_task_for_conversation(db, &project_id, &cid)?;
+                attr.project_id = Some(pid.clone());
+                attr.task_id = Some(tid.clone());
+                attr.source = "auto_conversation".into();
+                attr.confidence = "high".into();
+                attr.unassigned_reason = None;
+                rebind_open_intervals_for_conversation(db, &cid, &pid, &tid)?;
+            } else {
+                let tid = projects::ensure_general_task(db, &project_id)?;
+                attr.task_id = Some(tid);
+                attr.source = "auto_general".into();
+                attr.confidence = "medium".into();
+                attr.unassigned_reason = None;
+            }
         }
+    } else if let (Some(pid), Some(tid), Some(cid)) = (
+        attr.project_id.clone(),
+        attr.task_id.clone(),
+        event.conversation_id.clone(),
+    ) {
+        rebind_open_intervals_for_conversation(db, &cid, &pid, &tid)?;
     }
 
     // Privacy: strip prompt text unless explicitly enabled
@@ -155,16 +274,18 @@ pub fn ingest_event(db: &Db, mut event: HookEventIn) -> AppResult<IngestOutcome>
         Ok(())
     })?;
 
-    if let Some(reason) = &attr.unassigned_reason {
-        // Only queue when task is missing or project unknown
-        if attr.task_id.is_none() {
-            attribution::record_unassigned(
-                db,
-                &event_id,
-                workspace_path.as_deref(),
-                event.conversation_id.as_deref(),
-                reason,
-            )?;
+    // Only unknown workspaces need manual review; noise / known projects are never queued.
+    if attr.task_id.is_none() {
+        if let Some(reason) = &attr.unassigned_reason {
+            if reason == "unknown_workspace" {
+                attribution::record_unassigned(
+                    db,
+                    &event_id,
+                    workspace_path.as_deref(),
+                    event.conversation_id.as_deref(),
+                    reason,
+                )?;
+            }
         }
     }
 
@@ -224,6 +345,28 @@ fn kind_str(kind: IntervalKind) -> &'static str {
     }
 }
 
+/// Attach open intervals for a conversation once project/task attribution is known.
+pub fn rebind_open_intervals_for_conversation(
+    db: &Db,
+    conversation_id: &str,
+    project_id: &str,
+    task_id: &str,
+) -> AppResult<()> {
+    db.with_conn(|conn| {
+        conn.exec_drop(
+            "UPDATE activity_intervals
+             SET project_id = COALESCE(project_id, ?),
+                 task_id = COALESCE(task_id, ?),
+                 kind = CASE WHEN kind = 'unattributed' THEN 'agent' ELSE kind END
+             WHERE ended_at IS NULL
+               AND conversation_id = ?
+               AND (task_id IS NULL OR project_id IS NULL OR kind = 'unattributed')",
+            (project_id, task_id, conversation_id),
+        )?;
+        Ok(())
+    })
+}
+
 fn open_interval(
     db: &Db,
     kind: IntervalKind,
@@ -233,6 +376,15 @@ fn open_interval(
     occurred_at: &str,
     workspace: Option<&str>,
 ) -> AppResult<()> {
+    // If attribution is now known, repair any prior open intervals for this chat.
+    if let (Some(pid), Some(tid), Some(cid)) = (
+        attr.project_id.as_deref(),
+        attr.task_id.as_deref(),
+        event.conversation_id.as_deref(),
+    ) {
+        rebind_open_intervals_for_conversation(db, cid, pid, tid)?;
+    }
+
     // If already open same kind for same conversation, keep it open (no duplicate).
     let has_open = db.with_conn(|conn| {
         let n: i64 = conn
@@ -248,13 +400,9 @@ fn open_interval(
         return Ok(());
     }
 
-    let interval_kind = if attr.task_id.is_none() && kind != IntervalKind::IdleExcluded {
-        // Still track, but mark unattributed when no task
-        if attr.project_id.is_none() {
-            IntervalKind::Unattributed
-        } else {
-            kind
-        }
+    // Prefer the requested kind; only fall back to unattributed when project is unknown.
+    let interval_kind = if attr.project_id.is_none() && kind != IntervalKind::IdleExcluded {
+        IntervalKind::Unattributed
     } else {
         kind
     };
@@ -468,8 +616,151 @@ mod tests {
         .unwrap();
         let items = attribution::list_unassigned(&db).unwrap();
         assert!(!items.is_empty());
+        assert!(items.iter().all(|i| i.reason == "unknown_workspace"));
         let tasks = projects::list_tasks(&db, None).unwrap();
         assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn empty_conversation_row_falls_through_to_workspace_auto_task() {
+        let db = open_test_db().unwrap();
+        let p = projects::create_project(
+            &db,
+            NewProject {
+                name: "Fallback".into(),
+                client: None,
+                description: None,
+                git_repository: None,
+                billing_model: "fixed_price".into(),
+                contracted_budget_minor: 0,
+                currency: "USD".into(),
+                workspaces: vec!["D:\\fallback".into()],
+            },
+        )
+        .unwrap();
+        // Legacy row with conversation id but no project/task must not block workspace mapping.
+        db.with_conn(|conn| {
+            conn.exec_drop(
+                "INSERT INTO cursor_conversations (id, conversation_id, project_id, task_id, first_seen_at, last_seen_at)
+                 VALUES (?, ?, NULL, NULL, ?, ?)",
+                (
+                    uuid::Uuid::new_v4().to_string(),
+                    "conv-empty-row",
+                    "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:00:00Z",
+                ),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        ingest_event(
+            &db,
+            HookEventIn {
+                event_type: "sessionStart".into(),
+                occurred_at: Some("2026-01-01T00:01:00Z".into()),
+                workspace_roots: Some(vec!["D:\\fallback".into()]),
+                conversation_id: Some("conv-empty-row".into()),
+                generation_id: Some("g-fb".into()),
+                model: None,
+                model_id: None,
+                agent_state: None,
+                cursor_version: None,
+                payload: json!({}),
+            },
+        )
+        .unwrap();
+
+        let tasks = projects::list_tasks(&db, Some(&p.id)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0].title.starts_with("Chat · "));
+        assert!(attribution::list_unassigned(&db).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mapped_workspace_without_conversation_uses_general_task() {
+        let db = open_test_db().unwrap();
+        let p = projects::create_project(
+            &db,
+            NewProject {
+                name: "GeneralWs".into(),
+                client: None,
+                description: None,
+                git_repository: None,
+                billing_model: "fixed_price".into(),
+                contracted_budget_minor: 0,
+                currency: "USD".into(),
+                workspaces: vec!["D:\\general-ws".into()],
+            },
+        )
+        .unwrap();
+
+        ingest_event(
+            &db,
+            HookEventIn {
+                event_type: "workspaceOpen".into(),
+                occurred_at: Some("2026-01-01T00:00:00Z".into()),
+                workspace_roots: Some(vec!["D:\\general-ws".into()]),
+                conversation_id: None,
+                generation_id: None,
+                model: None,
+                model_id: None,
+                agent_state: None,
+                cursor_version: None,
+                payload: json!({}),
+            },
+        )
+        .unwrap();
+
+        let tasks = projects::list_tasks(&db, Some(&p.id)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "General");
+        assert!(attribution::list_unassigned(&db).unwrap().is_empty());
+
+        // Second event reuses the same General task.
+        ingest_event(
+            &db,
+            HookEventIn {
+                event_type: "afterFileEdit".into(),
+                occurred_at: Some("2026-01-01T00:01:00Z".into()),
+                workspace_roots: Some(vec!["D:\\general-ws".into()]),
+                conversation_id: None,
+                generation_id: None,
+                model: None,
+                model_id: None,
+                agent_state: None,
+                cursor_version: None,
+                payload: json!({"file": "a.rs"}),
+            },
+        )
+        .unwrap();
+        let tasks2 = projects::list_tasks(&db, Some(&p.id)).unwrap();
+        assert_eq!(tasks2.len(), 1);
+        assert_eq!(tasks2[0].id, tasks[0].id);
+    }
+
+    #[test]
+    fn no_workspace_no_conversation_does_not_queue_unassigned() {
+        let db = open_test_db().unwrap();
+        let out = ingest_event(
+            &db,
+            HookEventIn {
+                event_type: "afterAgentThought".into(),
+                occurred_at: Some("2026-01-01T00:00:00Z".into()),
+                workspace_roots: None,
+                conversation_id: None,
+                generation_id: Some("g-noise".into()),
+                model: None,
+                model_id: None,
+                agent_state: None,
+                cursor_version: None,
+                payload: json!({"note": "signal-less"}),
+            },
+        )
+        .unwrap();
+        assert!(out.accepted);
+        assert!(attribution::list_unassigned(&db).unwrap().is_empty());
+        assert!(projects::list_tasks(&db, None).unwrap().is_empty());
     }
 
     #[test]

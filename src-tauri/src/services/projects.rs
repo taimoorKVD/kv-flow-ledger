@@ -1,6 +1,6 @@
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
-use crate::models::{NewProject, NewTask, Project, ProjectFinanceUpdate, Task};
+use crate::models::{NewProject, NewTask, Project, ProjectFinanceUpdate, Task, UpdateProject};
 use crate::time_engine::{compute_breakdown, IntervalKind, TimeInterval};
 use chrono::{DateTime, Utc};
 use mysql::prelude::*;
@@ -105,6 +105,66 @@ pub fn create_project(db: &Db, input: NewProject) -> AppResult<Project> {
         Ok(())
     })?;
     get_project(db, &id)?.ok_or_else(|| AppError::Message("project missing after create".into()))
+}
+
+pub fn update_project(db: &Db, project_id: &str, input: UpdateProject) -> AppResult<Project> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err(AppError::Message("project name required".into()));
+    }
+    let exists = get_project(db, project_id)?;
+    if exists.is_none() {
+        return Err(AppError::Message("project not found".into()));
+    }
+    let currency = crate::services::currency::normalize(&input.currency);
+    let now = Utc::now().to_rfc3339();
+    db.with_conn_mut(|conn| {
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        tx.exec_drop(
+            "UPDATE projects SET name = ?, client = ?, description = ?, git_repository = ?,
+             billing_model = ?, contracted_budget_minor = ?, currency = ?
+             WHERE id = ?",
+            (
+                name,
+                &input.client,
+                &input.description,
+                &input.git_repository,
+                &input.billing_model,
+                input.contracted_budget_minor,
+                &currency,
+                project_id,
+            ),
+        )?;
+        tx.exec_drop(
+            "DELETE FROM project_workspaces WHERE project_id = ?",
+            (project_id,),
+        )?;
+        for path in &input.workspaces {
+            let normalized = normalize_path(path);
+            if normalized.is_empty() {
+                continue;
+            }
+            tx.exec_drop(
+                "INSERT INTO project_workspaces (id, project_id, path, created_at) VALUES (?, ?, ?, ?)",
+                (Uuid::new_v4().to_string(), project_id, normalized, &now),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })?;
+    get_project(db, project_id)?.ok_or_else(|| AppError::Message("project missing after update".into()))
+}
+
+pub fn delete_project(db: &Db, project_id: &str) -> AppResult<()> {
+    let exists = get_project(db, project_id)?;
+    if exists.is_none() {
+        return Err(AppError::Message("project not found".into()));
+    }
+    db.with_conn(|conn| {
+        // Tasks/workspaces cascade; event/interval FKs are SET NULL.
+        conn.exec_drop("DELETE FROM projects WHERE id = ?", (project_id,))?;
+        Ok(())
+    })
 }
 
 pub fn get_project(db: &Db, id: &str) -> AppResult<Option<Project>> {
@@ -243,10 +303,12 @@ pub fn task_time_breakdown(
     conn: &mut PooledConn,
     task_id: &str,
 ) -> AppResult<crate::time_engine::TimeBreakdown> {
+    // Open intervals (ended_at NULL) count through "now", not zero-length.
+    let now = Utc::now().to_rfc3339();
     let rows: Vec<(String, String, String)> = conn.exec(
-        "SELECT kind, started_at, COALESCE(ended_at, started_at) FROM activity_intervals
+        "SELECT kind, started_at, COALESCE(ended_at, ?) FROM activity_intervals
          WHERE task_id = ? AND kind IN ('developer', 'agent', 'idle_excluded', 'unattributed')",
-        (task_id,),
+        (&now, task_id),
     )?;
     let mut intervals = Vec::new();
     for (kind_s, start_s, end_s) in rows {
@@ -370,6 +432,32 @@ pub fn ensure_task_for_conversation(
     Ok((project_id.to_string(), task.id))
 }
 
+/// Idempotent sticky task for workspace-only activity (no conversation id).
+pub fn ensure_general_task(db: &Db, project_id: &str) -> AppResult<String> {
+    let existing: Option<String> = db.with_conn(|conn| {
+        let row = conn.exec_first(
+            "SELECT id FROM tasks
+             WHERE project_id = ? AND title = 'General' AND status <> 'archived'
+             ORDER BY created_at ASC LIMIT 1",
+            (project_id,),
+        )?;
+        Ok(row)
+    })?;
+    if let Some(id) = existing {
+        return Ok(id);
+    }
+    let task = create_task(
+        db,
+        NewTask {
+            project_id: project_id.to_string(),
+            title: "General".into(),
+            description: Some("Auto-created for workspace activity without a chat".into()),
+            conversation_id: None,
+        },
+    )?;
+    Ok(task.id)
+}
+
 pub fn update_task_title(db: &Db, task_id: &str, title: &str) -> AppResult<Task> {
     let title = title.trim();
     if title.is_empty() {
@@ -454,8 +542,26 @@ pub fn update_project_finances(
     })
 }
 
+/// Normalize workspace paths from Cursor / Windows / Unix-style drive forms.
+/// Cursor on Windows often emits `/d:/repo` instead of `D:\repo`.
 pub fn normalize_path(path: &str) -> String {
-    path.replace('/', "\\").trim_end_matches('\\').to_string()
+    let mut p = path.trim().replace('/', "\\");
+    // `/d:\repo` or `\d:\repo` → `d:\repo`
+    while p.starts_with('\\') {
+        let rest = &p[1..];
+        if rest.len() >= 2 && rest.as_bytes().get(1) == Some(&b':') {
+            p = rest.to_string();
+        } else {
+            break;
+        }
+    }
+    // Uppercase drive letter: `d:\repo` → `D:\repo`
+    let bytes = p.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' {
+        let drive = (bytes[0] as char).to_ascii_uppercase();
+        p = format!("{drive}{}", &p[1..]);
+    }
+    p.trim_end_matches('\\').to_string()
 }
 
 #[cfg(test)]
@@ -494,5 +600,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(task.title, "Implement");
+    }
+
+    #[test]
+    fn normalize_cursor_windows_workspace_paths() {
+        assert_eq!(
+            normalize_path("/d:/taimoorKVD/devpulse"),
+            r"D:\taimoorKVD\devpulse"
+        );
+        assert_eq!(
+            normalize_path(r"D:\taimoorKVD\devpulse\"),
+            r"D:\taimoorKVD\devpulse"
+        );
+        assert_eq!(
+            normalize_path(r"d:\taimoorKVD\devpulse"),
+            r"D:\taimoorKVD\devpulse"
+        );
+    }
+
+    #[test]
+    fn update_and_delete_project() {
+        let db = open_test_db().unwrap();
+        let p = create_project(
+            &db,
+            NewProject {
+                name: "Old".into(),
+                client: None,
+                description: None,
+                git_repository: None,
+                billing_model: "fixed_price".into(),
+                contracted_budget_minor: 0,
+                currency: "USD".into(),
+                workspaces: vec!["D:\\old".into()],
+            },
+        )
+        .unwrap();
+        let updated = update_project(
+            &db,
+            &p.id,
+            UpdateProject {
+                name: "New".into(),
+                client: Some("Acme".into()),
+                description: None,
+                git_repository: None,
+                billing_model: "hourly".into(),
+                contracted_budget_minor: 50_000,
+                currency: "PKR".into(),
+                workspaces: vec!["D:\\new".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.name, "New");
+        assert_eq!(updated.client.as_deref(), Some("Acme"));
+        assert_eq!(updated.workspaces, vec!["D:\\new".to_string()]);
+        assert!(find_project_by_workspace(&db, "D:\\old").unwrap().is_none());
+        assert_eq!(
+            find_project_by_workspace(&db, "D:\\new").unwrap().as_deref(),
+            Some(p.id.as_str())
+        );
+        delete_project(&db, &p.id).unwrap();
+        assert!(get_project(&db, &p.id).unwrap().is_none());
+        assert!(list_projects(&db).unwrap().is_empty());
     }
 }

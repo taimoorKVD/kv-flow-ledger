@@ -23,7 +23,7 @@ export default {
         mono: ["IBM Plex Mono", "ui-monospace", "monospace"],
       },
       boxShadow: {
-        glow: "0 12px 60px #0b4b8930",
+        glow: "0 12px 48px #3ecf9a33",
       },
     },
   },

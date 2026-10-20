@@ -55,10 +55,10 @@ export default function FinancePage() {
           <h2 className="text-lg font-bold">Cost attribution</h2>
           <div className="mt-6 space-y-5">
             {[
-              ["Labor valuation", fin.labor_cost_minor, "#64a9ff"],
-              ["AI allocation", fin.ai_cost_minor, "#a88dfc"],
-              ["Other expenses", fin.other_expenses_minor, "#f3be6e"],
-              ["Subscription allocation", fin.subscription_allocation_minor, "#7dd3fc"],
+              ["Labor valuation", fin.labor_cost_minor, "#3ecf9a"],
+              ["AI allocation", fin.ai_cost_minor, "#5eead4"],
+              ["Other expenses", fin.other_expenses_minor, "#f0bc6d"],
+              ["Subscription allocation", fin.subscription_allocation_minor, "#2bb888"],
             ].map(([n, v, c]) => (
               <div key={String(n)}>
                 <div className="mb-2 flex justify-between text-sm">
@@ -76,7 +76,7 @@ export default function FinancePage() {
               </div>
             ))}
           </div>
-          <div className="mt-6 flex items-center justify-between border-t border-[#2b3b52] pt-5">
+          <div className="mt-6 flex items-center justify-between border-t border-stroke pt-5">
             <span className="label">Total allocated cost</span>
             <strong className="text-2xl">{money(fin.total_cost_minor, fin.currency)}</strong>
           </div>

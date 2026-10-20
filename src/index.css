@@ -4,27 +4,72 @@
 
 :root,
 .dark {
-  --ink: #eaf0fb;
-  --muted: #8e9ab2;
-  --stroke: #26334a;
-  --surface: #141d2c;
-  --bg: #0b111d;
-  --accent: #63a8ff;
+  --ink: #e7f4ef;
+  --muted: #849990;
+  --stroke: #1e332c;
+  --surface: #101c19;
+  --bg: #081210;
+  --accent: #3ecf9a;
+  --accent-strong: #2bb888;
+  --accent-soft: #143029;
+  --header: #0c1815cc;
+  --panel-from: #142420;
+  --panel-to: #0f1a17;
+  --soft-bg: #0e1a16;
+  --soft-stroke: #243f36;
+  --field-bg: #0a1512;
+  --field-stroke: #2a463c;
+  --nav-hover: #163028;
+  --nav-active-bg: #1a3d34;
+  --nav-active-ink: #c8f5e4;
+  --btn-ink: #04110c;
+  --ghost-bg: #152820;
+  --ghost-stroke: #2f4d42;
+  --ghost-ink: #d4efe4;
+  --table-rule: #1f342c;
+  --progress-track: #243f36;
+  --log-line: #2f6b55;
+  --toast-bg: #1a3830;
+  --toast-stroke: #3a6b58;
 }
 
 .light {
-  --ink: #0f172a;
-  --muted: #64748b;
-  --stroke: #dbe3ef;
+  --ink: #0d1f1a;
+  --muted: #5c746b;
+  --stroke: #d5e8e0;
   --surface: #ffffff;
-  --bg: #f4f7fb;
-  --accent: #2563eb;
+  --bg: #f3faf7;
+  --accent: #0f9f6e;
+  --accent-strong: #0d8a5f;
+  --accent-soft: #d8f5ea;
+  --header: #f3faf7ee;
+  --panel-from: #ffffff;
+  --panel-to: #ffffff;
+  --soft-bg: #eef8f3;
+  --soft-stroke: #cfe5db;
+  --field-bg: #ffffff;
+  --field-stroke: #c5ddd3;
+  --nav-hover: #e4f5ed;
+  --nav-active-bg: #d8f5ea;
+  --nav-active-ink: #0a5c40;
+  --btn-ink: #ffffff;
+  --ghost-bg: #ffffff;
+  --ghost-stroke: #c5ddd3;
+  --ghost-ink: #0d1f1a;
+  --table-rule: #d5e8e0;
+  --progress-track: #d5e8e0;
+  --log-line: #3ecf9a;
+  --toast-bg: #0f9f6e;
+  --toast-stroke: #0d8a5f;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--bg);
+  background:
+    radial-gradient(1200px 500px at 10% -10%, #14352c55, transparent 55%),
+    radial-gradient(900px 420px at 95% 0%, #0f2a2440, transparent 50%),
+    var(--bg);
   color: var(--ink);
   font-family: "IBM Plex Sans", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
 }
@@ -35,30 +80,30 @@ body {
 }
 
 .panel {
-  background: linear-gradient(145deg, #172233, #121c2b);
+  background: linear-gradient(145deg, var(--panel-from), var(--panel-to));
   border: 1px solid var(--stroke);
   border-radius: 17px;
 }
 
 .light .panel {
   background: #ffffff;
-  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+  box-shadow: 0 1px 2px rgb(13 31 26 / 4%);
 }
 
 .soft {
-  background: #111b2b;
-  border: 1px solid #28364c;
+  background: var(--soft-bg);
+  border: 1px solid var(--soft-stroke);
   border-radius: 12px;
 }
 
 .light .soft {
-  background: #f8fafc;
-  border-color: #e2e8f0;
+  background: #f4faf7;
+  border-color: #d5e8e0;
 }
 
 .navtab {
   padding: 11px 15px;
-  color: #9aaac2;
+  color: var(--muted);
   border-radius: 9px;
   transition: 0.15s;
   white-space: nowrap;
@@ -67,23 +112,18 @@ body {
 }
 
 .navtab:hover {
-  color: white;
-  background: #1d2b3f;
+  color: var(--ink);
+  background: var(--nav-hover);
 }
 
 .navtab.active {
-  background: #244670;
-  color: #dceeff;
-}
-
-.light .navtab.active {
-  background: #dbeafe;
-  color: #1e3a8a;
+  background: var(--nav-active-bg);
+  color: var(--nav-active-ink);
 }
 
 .btn {
-  background: #65a9ff;
-  color: #06101e;
+  background: var(--accent);
+  color: var(--btn-ink);
   font-weight: 750;
   border-radius: 10px;
   padding: 10px 14px;
@@ -95,13 +135,19 @@ body {
 }
 
 .btn:hover {
-  background: #8cbeff;
+  background: var(--accent-strong);
+  filter: brightness(1.08);
+}
+
+.light .btn:hover {
+  filter: none;
+  background: var(--accent-strong);
 }
 
 .btn-ghost {
-  border: 1px solid #35445a;
-  background: #1c293b;
-  color: #d8e6f7;
+  border: 1px solid var(--ghost-stroke);
+  background: var(--ghost-bg);
+  color: var(--ghost-ink);
   font-weight: 600;
   border-radius: 10px;
   padding: 9px 12px;
@@ -113,7 +159,8 @@ body {
 }
 
 .btn-ghost:hover {
-  background: #293b51;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .pill {
@@ -121,9 +168,9 @@ body {
   font-weight: 700;
   border-radius: 999px;
   padding: 5px 9px;
-  border: 1px solid #37506b;
-  background: #1b2c43;
-  color: #bed5f6;
+  border: 1px solid var(--soft-stroke);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .kpi {
@@ -140,14 +187,14 @@ body {
 .label {
   font-size: 12px;
   font-weight: 600;
-  color: #a8b5c8;
+  color: var(--muted);
 }
 
 .field {
   width: 100%;
-  background: #0d1726;
-  border: 1px solid #32435b;
-  color: #e5edf8;
+  background: var(--field-bg);
+  border: 1px solid var(--field-stroke);
+  color: var(--ink);
   border-radius: 9px;
   padding: 10px 11px;
   font-size: 13px;
@@ -155,7 +202,7 @@ body {
 }
 
 .field:focus {
-  border-color: #6bb0ff;
+  border-color: var(--accent);
 }
 
 .table {
@@ -167,7 +214,7 @@ body {
 .table th {
   padding: 13px 15px;
   text-align: left;
-  border-bottom: 1px solid #253247;
+  border-bottom: 1px solid var(--table-rule);
   font-size: 12px;
 }
 
@@ -175,7 +222,7 @@ body {
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #8395ad;
+  color: var(--muted);
 }
 
 .tag {
@@ -183,8 +230,8 @@ body {
   border-radius: 7px;
   padding: 4px 7px;
   font-weight: 700;
-  background: #26364e;
-  color: #c0d2eb;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .green {
@@ -204,8 +251,8 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #5fe3b5;
-  box-shadow: 0 0 0 4px #1d4c42;
+  background: #3ecf9a;
+  box-shadow: 0 0 0 4px #1a3d34;
 }
 
 .dot.off {
@@ -214,7 +261,7 @@ body {
 }
 
 .logrow {
-  border-left: 2px solid #385572;
+  border-left: 2px solid var(--log-line);
   padding-left: 14px;
   position: relative;
 }
@@ -227,13 +274,13 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #70aef7;
+  background: var(--accent);
 }
 
 .progress {
   height: 8px;
   border-radius: 10px;
-  background: #2a394d;
+  background: var(--progress-track);
   overflow: hidden;
 }
 
@@ -241,4 +288,24 @@ body {
   height: 100%;
   display: block;
   border-radius: 10px;
+}
+
+.brand-mark {
+  background: linear-gradient(145deg, #3ecf9a, #1a9f78);
+  color: #04110c;
+  box-shadow: 0 10px 36px #3ecf9a33;
+}
+
+.light .brand-mark {
+  box-shadow: 0 8px 24px #0f9f6e2a;
+}
+
+.app-header {
+  background: var(--header);
+  border-color: var(--stroke);
+}
+
+.toast {
+  border-color: var(--toast-stroke);
+  background: var(--toast-bg);
 }

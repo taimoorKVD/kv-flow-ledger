@@ -81,10 +81,10 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
       </div>
 
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Kpi label="Task work time" icon={<Clock className="h-4 w-4 text-blue-300" />} value={dur(dashboard.task_work_ms)} hint="Active task intervals; no double counting" />
+        <Kpi label="Task work time" icon={<Clock className="h-4 w-4 text-accent" />} value={dur(dashboard.task_work_ms)} hint="Active task intervals; no double counting" />
         <Kpi
           label="AI tokens logged"
-          icon={<Cpu className="h-4 w-4 text-violet-300" />}
+          icon={<Cpu className="h-4 w-4 text-teal-200" />}
           value={compactTokens(dashboard.ai_tokens, dashboard.ai_tokens_available)}
           hint="Verified imports only — never fabricated"
         />
@@ -96,7 +96,7 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
         />
         <Kpi
           label="Estimated project margin"
-          icon={<TrendingUp className="h-4 w-4 text-emerald-300" />}
+          icon={<TrendingUp className="h-4 w-4 text-accent" />}
           value={margin(dashboard.margin_pct)}
           hint="Based on recognized revenue, not budget"
           valueClass={dashboard.profit_minor < 0 ? "red" : "green"}
@@ -119,12 +119,12 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
             <SoftStat label="AI allocation" value={money(dashboard.ai_minor, dashboard.currency)} />
             <SoftStat label="Other expenses" value={money(dashboard.other_minor, dashboard.currency)} />
           </div>
-          <div className="mt-6 flex h-4 overflow-hidden rounded-full bg-[#26364c]">
-            <span style={{ background: "#64a9ff", width: `${(100 * dashboard.labor_minor) / cost}%` }} />
-            <span style={{ background: "#a88dfc", width: `${(100 * dashboard.ai_minor) / cost}%` }} />
-            <span style={{ background: "#f3be6e", width: `${(100 * dashboard.other_minor) / cost}%` }} />
+          <div className="mt-6 flex h-4 overflow-hidden rounded-full bg-[var(--progress-track)]">
+            <span style={{ background: "#3ecf9a", width: `${(100 * dashboard.labor_minor) / cost}%` }} />
+            <span style={{ background: "#5eead4", width: `${(100 * dashboard.ai_minor) / cost}%` }} />
+            <span style={{ background: "#f0bc6d", width: `${(100 * dashboard.other_minor) / cost}%` }} />
           </div>
-          <div className="mt-7 grid grid-cols-2 gap-4 border-t border-[#2c3a4f] pt-5">
+          <div className="mt-7 grid grid-cols-2 gap-4 border-t border-stroke pt-5">
             <div>
               <div className="tiny">Recognized revenue</div>
               <div className="mt-1 text-xl font-bold">{money(dashboard.recognized_revenue_minor, dashboard.currency)}</div>
@@ -144,7 +144,7 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
               <h2 className="text-lg font-bold">Autonomous tracking</h2>
               <p className="tiny mt-1">Cursor task lifecycle</p>
             </div>
-            <RadioTower className="h-5 w-5 text-blue-300" />
+            <RadioTower className="h-5 w-5 text-accent" />
           </div>
           <div className="mt-5 space-y-4">
             <div className="soft p-4">
@@ -176,7 +176,7 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
         <div className="panel p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-bold">Tracked tasks</h2>
-            <button type="button" className="text-xs font-semibold text-blue-300" onClick={() => setPage("projects")}>
+            <button type="button" className="text-xs font-semibold text-accent" onClick={() => setPage("projects")}>
               View all →
             </button>
           </div>
@@ -213,7 +213,7 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
         <div className="panel p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-bold">Connection</h2>
-            <button type="button" className="text-xs font-semibold text-blue-300" onClick={() => setPage("settings")}>
+            <button type="button" className="text-xs font-semibold text-accent" onClick={() => setPage("settings")}>
               Settings →
             </button>
           </div>

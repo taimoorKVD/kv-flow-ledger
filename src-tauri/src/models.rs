@@ -30,6 +30,18 @@ pub struct NewProject {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProject {
+    pub name: String,
+    pub client: Option<String>,
+    pub description: Option<String>,
+    pub git_repository: Option<String>,
+    pub billing_model: String,
+    pub contracted_budget_minor: i64,
+    pub currency: String,
+    pub workspaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub project_id: String,
@@ -141,6 +153,27 @@ pub struct UnassignedItem {
     pub conversation_id: Option<String>,
     pub reason: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UnassignedQuery {
+    /// When set, only rows relevant to this project (workspace map or conversation link).
+    pub project_id: Option<String>,
+    pub reason: Option<String>,
+    pub search: Option<String>,
+    /// all | with_conversation | without_conversation
+    pub conversation: Option<String>,
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnassignedPage {
+    pub items: Vec<UnassignedItem>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+    pub reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

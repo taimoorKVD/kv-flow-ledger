@@ -83,7 +83,7 @@ fn seed_defaults(conn: &mut PooledConn) -> AppResult<()> {
         ("idle_threshold_minutes", "5"),
         ("agent_tracking_enabled", "true"),
         ("store_prompt_text", "false"),
-        ("require_attribution_review", "true"),
+        ("require_attribution_review", "false"),
         ("ingest_port", "17321"),
         ("ingest_token", ""),
         ("theme", "dark"),

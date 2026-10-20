@@ -29,6 +29,20 @@ pub fn create_project(state: State<'_, AppState>, input: NewProject) -> AppResul
 }
 
 #[tauri::command]
+pub fn update_project(
+    state: State<'_, AppState>,
+    project_id: String,
+    input: UpdateProject,
+) -> AppResult<Project> {
+    projects::update_project(&state.db, &project_id, input)
+}
+
+#[tauri::command]
+pub fn delete_project(state: State<'_, AppState>, project_id: String) -> AppResult<()> {
+    projects::delete_project(&state.db, &project_id)
+}
+
+#[tauri::command]
 pub fn list_tasks(state: State<'_, AppState>, project_id: Option<String>) -> AppResult<Vec<Task>> {
     projects::list_tasks(&state.db, project_id.as_deref())
 }
@@ -97,6 +111,19 @@ pub fn list_activity(
 #[tauri::command]
 pub fn list_unassigned(state: State<'_, AppState>) -> AppResult<Vec<UnassignedItem>> {
     attribution::list_unassigned(&state.db)
+}
+
+#[tauri::command]
+pub fn list_unassigned_page(
+    state: State<'_, AppState>,
+    query: UnassignedQuery,
+) -> AppResult<UnassignedPage> {
+    attribution::list_unassigned_page(&state.db, &query)
+}
+
+#[tauri::command]
+pub fn dismiss_noise_unassigned(state: State<'_, AppState>) -> AppResult<i64> {
+    attribution::dismiss_noise_unassigned(&state.db)
 }
 
 #[tauri::command]

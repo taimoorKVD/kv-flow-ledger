@@ -11,7 +11,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
   const [salary, setSalary] = useState("0");
   const [hours, setHours] = useState("160");
   const [salaryCcy, setSalaryCcy] = useState("USD");
-  const [review, setReview] = useState(true);
+  const [review, setReview] = useState(false);
   const [hooks, setHooks] = useState<Record<string, unknown> | null>(null);
   const [appInfo, setAppInfo] = useState<Record<string, unknown> | null>(null);
   const [currencies, setCurrencies] = useState<
@@ -37,7 +37,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
       setSalary(String(Number(s.values.monthly_salary_minor ?? "0") / 100));
       setHours(s.values.monthly_hours ?? "160");
       setSalaryCcy(s.values.default_currency ?? "USD");
-      setReview((s.values.require_attribution_review ?? "true") === "true");
+      setReview((s.values.require_attribution_review ?? "false") === "true");
       if (s.values.theme === "light" || s.values.theme === "dark") setTheme(s.values.theme);
       setHooks(await api.hooksStatus());
       setAppInfo(await api.getAppInfo());
@@ -118,7 +118,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
             <label className="flex items-start gap-3 text-sm">
               <input
                 type="checkbox"
-                className="mt-1 accent-blue-400"
+                className="mt-1 accent-[var(--accent)]"
                 checked={review}
                 onChange={(e) => setReview(e.target.checked)}
               />

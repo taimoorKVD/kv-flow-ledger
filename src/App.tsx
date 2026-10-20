@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from "react";
-import { Activity, Plus, ShieldCheck } from "lucide-react";
+import { Plus, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
+import { BrandMark, BrandWordmark } from "@/components/BrandMark";
 import { pageMeta, useAppStore, type PageId } from "@/stores/appStore";
 import OverviewPage from "@/pages/OverviewPage";
 import ProjectsPage from "@/pages/ProjectsPage";
@@ -89,22 +90,17 @@ export default function App() {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-30 border-b border-stroke bg-[#0e1725]/95 backdrop-blur-xl">
+      <header className="app-header sticky top-0 z-30 border-b backdrop-blur-xl">
         <div className="shell px-5 lg:px-9">
           <div className="flex h-[67px] items-center justify-between gap-4">
             <div className="flex min-w-0 items-center gap-3">
-              <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 shadow-glow">
-                <Activity className="h-5 w-5 text-white" />
+              <div className="brand-mark grid h-9 w-9 place-items-center rounded-xl">
+                <BrandMark className="h-[18px] w-[18px]" />
               </div>
-              <div>
-                <div className="font-bold leading-5 tracking-tight">
-                  flowledger<span className="text-blue-400">.</span>
-                </div>
-                <div className="tiny">DEVELOPER ECONOMICS</div>
-              </div>
+              <BrandWordmark />
             </div>
             <div className="flex items-center gap-2">
-              <span className="hidden items-center gap-2 rounded-full border border-[#30445c] bg-[#17263a] px-3 py-2 text-xs text-[#abc0d8] md:flex">
+              <span className="soft hidden items-center gap-2 px-3 py-2 text-xs md:flex">
                 <span className={`dot ${connected ? "" : "off"}`} />
                 <span>
                   {connected
@@ -130,7 +126,7 @@ export default function App() {
               ))}
             </nav>
             <div className="hidden items-center gap-2 text-xs text-muted xl:flex">
-              <ShieldCheck className="h-4 w-4" /> Local-first · No cloud upload
+              <ShieldCheck className="h-4 w-4 text-accent" /> Local-first · No cloud upload
             </div>
           </div>
         </div>
@@ -139,7 +135,7 @@ export default function App() {
       <main className="shell space-y-6 px-5 py-8 lg:px-9">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <div className="mb-2 text-xs font-semibold tracking-[.14em] text-blue-400">
+            <div className="mb-2 text-xs font-semibold tracking-[.14em] text-accent">
               WORKSPACE / ENGINEERING
             </div>
             <h1 className="text-[27px] font-bold tracking-tight sm:text-[32px]">{title}</h1>
@@ -165,7 +161,7 @@ export default function App() {
               className="btn"
               onClick={() => setPage("projects")}
             >
-              <Plus className="h-4 w-4" /> New task
+              <Plus className="h-4 w-4" /> New project
             </button>
           </div>
         </div>
@@ -189,7 +185,11 @@ export default function App() {
         )}
       </main>
 
-      {toast && <div className="toast fixed bottom-6 right-6 z-40 rounded-xl border border-[#4b6a8c] bg-[#233852] px-4 py-3 text-sm text-white shadow-xl">{toast}</div>}
+      {toast && (
+        <div className="toast fixed bottom-6 right-6 z-40 rounded-xl border px-4 py-3 text-sm text-white shadow-xl">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

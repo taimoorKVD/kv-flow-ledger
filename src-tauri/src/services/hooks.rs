@@ -23,12 +23,32 @@ pub fn status(db: &Db) -> AppResult<HookInstallStatus> {
     } else {
         false
     };
+    // Keep ~/.cursor/flowledger/config.json aligned with current ingest port/token.
+    if installed {
+        let _ = sync_runtime_config(db);
+    }
     let detail = settings::get(db, "hooks_install_detail")?.unwrap_or_default();
     Ok(HookInstallStatus {
         installed,
         hooks_path: path.display().to_string(),
         detail,
     })
+}
+
+/// Rewrite hook bridge config so auth/port never drift from FlowLedger settings.
+pub fn sync_runtime_config(db: &Db) -> AppResult<()> {
+    let home = dirs::home_dir().ok_or_else(|| AppError::Message("home dir not found".into()))?;
+    let dest_dir = home.join(".cursor").join("flowledger");
+    fs::create_dir_all(&dest_dir)?;
+    let port = settings::ingest_port(db)?;
+    let token = settings::get(db, "ingest_token")?.unwrap_or_default();
+    let cfg = json!({
+        "port": port,
+        "token": token,
+        "endpoint": format!("http://127.0.0.1:{port}/hooks/ingest")
+    });
+    fs::write(dest_dir.join("config.json"), serde_json::to_string_pretty(&cfg)?)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -69,13 +89,14 @@ pub fn install(db: &Db, resource_dir: PathBuf, ingest_port: u16, token: &str) ->
     let script_dest = dest_dir.join("flowledger-hook.mjs");
     fs::copy(&src, &script_dest)?;
 
-    // Write env config for the hook
+    // Write env config for the hook (keep in sync with app settings)
     let cfg = json!({
         "port": ingest_port,
         "token": token,
         "endpoint": format!("http://127.0.0.1:{ingest_port}/hooks/ingest")
     });
     fs::write(dest_dir.join("config.json"), serde_json::to_string_pretty(&cfg)?)?;
+    let _ = sync_runtime_config(db);
 
     let hooks_path = hooks_json_path()?;
     let backup_path = cursor_dir.join("hooks.json.flowledger.bak");
@@ -89,7 +110,7 @@ pub fn install(db: &Db, resource_dir: PathBuf, ingest_port: u16, token: &str) ->
         json!({ "version": 1, "hooks": {} })
     };
 
-    let command = format!("node \"{}\"", script_dest.display());
+    let script_quoted = format!("node \"{}\"", script_dest.display());
 
     let events = [
         "workspaceOpen",
@@ -102,6 +123,7 @@ pub fn install(db: &Db, resource_dir: PathBuf, ingest_port: u16, token: &str) ->
         "subagentStop",
         "afterFileEdit",
         "afterAgentResponse",
+        "afterAgentThought",
         "stop",
     ];
 
@@ -115,7 +137,8 @@ pub fn install(db: &Db, resource_dir: PathBuf, ingest_port: u16, token: &str) ->
         .ok_or_else(|| AppError::Message("hooks key must be object".into()))?;
 
     for ev in events {
-        let entry = json!([{ "command": command }]);
+        // Pass --event so type is known even if stdin payload is incomplete on Windows.
+        let entry = json!([{ "command": format!("{script_quoted} --event={ev}") }]);
         hooks_obj.insert(ev.to_string(), entry);
     }
     if root.get("version").is_none() {
