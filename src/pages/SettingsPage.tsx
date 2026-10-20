@@ -10,9 +10,25 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
   const [idle, setIdle] = useState("5");
   const [salary, setSalary] = useState("0");
   const [hours, setHours] = useState("160");
+  const [salaryCcy, setSalaryCcy] = useState("USD");
   const [review, setReview] = useState(true);
   const [hooks, setHooks] = useState<Record<string, unknown> | null>(null);
   const [appInfo, setAppInfo] = useState<Record<string, unknown> | null>(null);
+  const [currencies, setCurrencies] = useState<
+    Array<{ code: string; name: string; symbol: string }>
+  >([]);
+  const [rates, setRates] = useState<
+    Array<{
+      id: string;
+      base_currency: string;
+      quote_currency: string;
+      rate_numeric: string;
+      effective_on: string;
+    }>
+  >([]);
+  const [rateBase, setRateBase] = useState("USD");
+  const [rateQuote, setRateQuote] = useState("PKR");
+  const [rateValue, setRateValue] = useState("278.50");
 
   useEffect(() => {
     void (async () => {
@@ -20,10 +36,13 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
       setIdle(s.values.idle_threshold_minutes ?? "5");
       setSalary(String(Number(s.values.monthly_salary_minor ?? "0") / 100));
       setHours(s.values.monthly_hours ?? "160");
+      setSalaryCcy(s.values.default_currency ?? "USD");
       setReview((s.values.require_attribution_review ?? "true") === "true");
       if (s.values.theme === "light" || s.values.theme === "dark") setTheme(s.values.theme);
       setHooks(await api.hooksStatus());
       setAppInfo(await api.getAppInfo());
+      setCurrencies(await api.listCurrencies());
+      setRates(await api.listExchangeRates());
     })();
   }, [setTheme]);
 
@@ -44,8 +63,20 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
     await api.saveSettings({
       monthly_salary_minor: String(Math.round(Number(salary) * 100)),
       monthly_hours: hours,
+      default_currency: salaryCcy,
     });
-    setToast("Labor valuation saved");
+    setToast(`Labor valuation saved (${salaryCcy})`);
+    await onRefresh();
+  }
+
+  async function saveRate() {
+    await api.upsertExchangeRate({
+      baseCurrency: rateBase,
+      quoteCurrency: rateQuote,
+      rateNumeric: rateValue,
+    });
+    setRates(await api.listExchangeRates());
+    setToast(`Rate ${rateBase}→${rateQuote} = ${rateValue} saved`);
     await onRefresh();
   }
 
@@ -115,7 +146,21 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
           <p className="tiny mt-1">Task-time valuation; not a claim about keyboard time.</p>
           <div className="mt-5 space-y-4">
             <div>
-              <label className="label">Monthly salary / cost basis (USD)</label>
+              <label className="label">Salary currency</label>
+              <select
+                className="field mt-1"
+                value={salaryCcy}
+                onChange={(e) => setSalaryCcy(e.target.value)}
+              >
+                {currencies.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.code} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Monthly salary / cost basis ({salaryCcy})</label>
               <input
                 className="field mt-1"
                 type="number"
@@ -137,16 +182,81 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
             </div>
             <div className="soft p-4">
               <div className="tiny">Labor valuation per task-work minute</div>
-              <div className="mt-1 text-2xl font-bold">{money(perMinute)}</div>
+              <div className="mt-1 text-2xl font-bold">{money(perMinute, salaryCcy)}</div>
             </div>
             <button type="button" className="btn" onClick={() => void saveSalary()}>
               Save valuation
             </button>
             <p className="tiny">
-              Salary-based labor valuation is an imputed economic cost, not an automatic cash
-              outflow.
+              When a project uses another currency (e.g. PKR), labor cost is converted using
+              exchange rates below.
             </p>
           </div>
+        </div>
+      </div>
+
+      <div className="panel p-5">
+        <h2 className="text-lg font-bold">Exchange rates</h2>
+        <p className="tiny mt-1">
+          Rate = quote units per 1 base unit (example: USD→PKR 278.50 means 1 USD = 278.50 PKR).
+        </p>
+        <div className="mt-4 grid gap-3 sm:grid-cols-4">
+          <div>
+            <label className="label">Base</label>
+            <select className="field mt-1" value={rateBase} onChange={(e) => setRateBase(e.target.value)}>
+              {currencies.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.code}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Quote</label>
+            <select className="field mt-1" value={rateQuote} onChange={(e) => setRateQuote(e.target.value)}>
+              {currencies.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.code}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Rate</label>
+            <input className="field mt-1" value={rateValue} onChange={(e) => setRateValue(e.target.value)} />
+          </div>
+          <div className="flex items-end">
+            <button type="button" className="btn w-full" onClick={() => void saveRate()}>
+              Save rate
+            </button>
+          </div>
+        </div>
+        <div className="mt-4 overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Pair</th>
+                <th>Rate</th>
+                <th>Effective</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rates.length === 0 && (
+                <tr>
+                  <td colSpan={3}>No rates yet</td>
+                </tr>
+              )}
+              {rates.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    {r.base_currency} → {r.quote_currency}
+                  </td>
+                  <td>{r.rate_numeric}</td>
+                  <td>{r.effective_on}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

@@ -6,9 +6,14 @@ import { useAppStore } from "@/stores/appStore";
 
 export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void> }) {
   const selectedProjectId = useAppStore((s) => s.selectedProjectId);
+  const projects = useAppStore((s) => s.projects);
   const tasks = useAppStore((s) => s.tasks);
   const dashboard = useAppStore((s) => s.dashboard);
   const setToast = useAppStore((s) => s.setToast);
+  const projectCcy =
+    projects.find((p) => p.id === selectedProjectId)?.currency ||
+    dashboard?.currency ||
+    "USD";
   const [rows, setRows] = useState<UsageRecord[]>([]);
   const [open, setOpen] = useState(false);
   const [taskId, setTaskId] = useState("");
@@ -37,7 +42,7 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
       cached_tokens: null,
       total_tokens: tokenNum,
       reported_cost_minor: costNum,
-      currency: "USD",
+      currency: projectCcy,
       billing_source: source,
       verification_status: tokenNum == null ? "unavailable" : "manual",
       notes: "User supplied",
@@ -172,7 +177,7 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
                 <input className="field mt-1" value={tokens} onChange={(e) => setTokens(e.target.value)} />
               </div>
               <div>
-                <label className="label">Allocated cost USD (optional)</label>
+                <label className="label">Allocated cost ({projectCcy}, optional)</label>
                 <input className="field mt-1" value={cost} onChange={(e) => setCost(e.target.value)} />
               </div>
             </div>

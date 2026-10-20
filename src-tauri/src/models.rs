@@ -149,4 +149,6 @@ pub struct ProjectFinanceUpdate {
     pub recognized_revenue_minor: i64,
     pub payments_received_minor: i64,
     pub other_expenses_minor: i64,
+    /// ISO currency code (USD, PKR, …). All project amounts are treated in this currency.
+    pub currency: String,
 }

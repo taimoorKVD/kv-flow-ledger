@@ -5,7 +5,7 @@ use crate::models::{ActivityEventDto, DashboardSummary, TrackingStatus};
 use crate::services::{attribution, hooks, projects, settings};
 use crate::time_engine::{compute_breakdown, IntervalKind, TimeInterval};
 use chrono::{DateTime, Utc};
-use rusqlite::OptionalExtension;
+use mysql::prelude::*;
 
 pub fn summary(db: &Db, project_id: Option<&str>, ingest_listening: bool) -> AppResult<DashboardSummary> {
     let rate = settings::labor_rate(db)?;
@@ -30,8 +30,11 @@ pub fn summary(db: &Db, project_id: Option<&str>, ingest_listening: bool) -> App
     };
 
     let work = project_work_ms(db, pid.as_deref())?;
-    let labor = rate.labor_cost_for_ms(work.combined_ms).unwrap_or(0);
-    let (ai_tokens, ai_tokens_available, ai_minor) = usage_totals(db, pid.as_deref())?;
+    // Labor is valued in settings (salary) currency, then converted into the project currency.
+    let labor_native = rate.labor_cost_for_ms(work.combined_ms).unwrap_or(0);
+    let labor = crate::services::currency::try_convert(db, labor_native, &rate.currency, &currency)?.0;
+    let (ai_tokens, ai_tokens_available, ai_minor) =
+        usage_totals(db, pid.as_deref(), &currency)?;
     let other = other_expenses(db, pid.as_deref())?;
     let sub = subscription_allocation(db, pid.as_deref())?;
     let recognized = recognized_revenue(db, pid.as_deref())?;
@@ -49,18 +52,16 @@ pub fn summary(db: &Db, project_id: Option<&str>, ingest_listening: bool) -> App
     );
 
     let active_projects: i64 = db.with_conn(|c| {
-        Ok(c.query_row(
-            "SELECT COUNT(*) FROM projects WHERE status = 'active'",
-            [],
-            |r| r.get(0),
-        )?)
+        Ok(c
+            .query_first("SELECT COUNT(*) FROM projects WHERE status = 'active'")?
+            .unwrap_or(0))
     })?;
     let active_tasks: i64 = db.with_conn(|c| {
-        Ok(c.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE status IN ('in_progress','active','review')",
-            [],
-            |r| r.get(0),
-        )?)
+        Ok(c
+            .query_first(
+                "SELECT COUNT(*) FROM tasks WHERE status IN ('in_progress','active','review')",
+            )?
+            .unwrap_or(0))
     })?;
 
     let (active_task_id, active_conversation_id, mode, last_event_at) = live_tracking(db)?;
@@ -103,33 +104,26 @@ fn project_work_ms(
     project_id: Option<&str>,
 ) -> AppResult<crate::time_engine::TimeBreakdown> {
     db.with_conn(|conn| {
-        let mut intervals = Vec::new();
-        if let Some(pid) = project_id {
-            let mut stmt = conn.prepare(
+        let rows: Vec<(String, String, String)> = if let Some(pid) = project_id {
+            conn.exec(
                 "SELECT kind, started_at, COALESCE(ended_at, started_at) FROM activity_intervals
-                 WHERE project_id = ?1 OR task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
-            )?;
-            let rows = stmt.query_map([pid], map_interval)?;
-            for r in rows {
-                intervals.push(r?);
-            }
+                 WHERE project_id = ? OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)",
+                (pid, pid),
+            )?
         } else {
-            let mut stmt = conn.prepare(
+            conn.query(
                 "SELECT kind, started_at, COALESCE(ended_at, started_at) FROM activity_intervals",
-            )?;
-            let rows = stmt.query_map([], map_interval)?;
-            for r in rows {
-                intervals.push(r?);
-            }
+            )?
+        };
+        let mut intervals = Vec::new();
+        for (kind_s, start_s, end_s) in rows {
+            intervals.push(map_interval(kind_s, start_s, end_s));
         }
         Ok(compute_breakdown(&intervals))
     })
 }
 
-fn map_interval(r: &rusqlite::Row<'_>) -> rusqlite::Result<TimeInterval> {
-    let kind_s: String = r.get(0)?;
-    let start_s: String = r.get(1)?;
-    let end_s: String = r.get(2)?;
+fn map_interval(kind_s: String, start_s: String, end_s: String) -> TimeInterval {
     let kind = match kind_s.as_str() {
         "developer" => IntervalKind::Developer,
         "agent" => IntervalKind::Agent,
@@ -142,69 +136,62 @@ fn map_interval(r: &rusqlite::Row<'_>) -> rusqlite::Result<TimeInterval> {
     let end = DateTime::parse_from_rfc3339(&end_s)
         .map(|d| d.with_timezone(&Utc))
         .unwrap_or(start);
-    Ok(TimeInterval { kind, start, end })
+    TimeInterval { kind, start, end }
 }
 
-fn usage_totals(db: &Db, project_id: Option<&str>) -> AppResult<(Option<i64>, bool, i64)> {
-    db.with_conn(|conn| {
-        let (tokens, cost, nulls): (Option<i64>, i64, i64) = if let Some(pid) = project_id {
-            conn.query_row(
-                "SELECT SUM(total_tokens), COALESCE(SUM(reported_cost_minor),0),
-                        SUM(CASE WHEN total_tokens IS NULL THEN 1 ELSE 0 END)
-                 FROM ai_usage_records
-                 WHERE project_id = ?1 OR task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
-                [pid],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )?
+fn usage_totals(
+    db: &Db,
+    project_id: Option<&str>,
+    target_currency: &str,
+) -> AppResult<(Option<i64>, bool, i64)> {
+    let rows: Vec<(Option<i64>, Option<i64>, String)> = db.with_conn(|conn| {
+        if let Some(pid) = project_id {
+            Ok(conn.exec(
+                "SELECT total_tokens, reported_cost_minor, currency FROM ai_usage_records
+                 WHERE project_id = ? OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)",
+                (pid, pid),
+            )?)
         } else {
-            conn.query_row(
-                "SELECT SUM(total_tokens), COALESCE(SUM(reported_cost_minor),0),
-                        SUM(CASE WHEN total_tokens IS NULL THEN 1 ELSE 0 END)
-                 FROM ai_usage_records",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )?
-        };
-        let count: i64 = if let Some(pid) = project_id {
-            conn.query_row(
-                "SELECT COUNT(*) FROM ai_usage_records
-                 WHERE project_id = ?1 OR task_id IN (SELECT id FROM tasks WHERE project_id = ?1)",
-                [pid],
-                |r| r.get(0),
-            )?
-        } else {
-            conn.query_row("SELECT COUNT(*) FROM ai_usage_records", [], |r| r.get(0))?
-        };
-        if count == 0 {
-            return Ok((None, false, 0));
+            Ok(conn.query(
+                "SELECT total_tokens, reported_cost_minor, currency FROM ai_usage_records",
+            )?)
         }
-        // If any records lack tokens and sum is null → unavailable
-        if tokens.is_none() || nulls > 0 && tokens.unwrap_or(0) == 0 {
-            // Still report partial sum if some rows have tokens
-            if let Some(t) = tokens {
-                return Ok((Some(t), true, cost));
-            }
-            return Ok((None, false, cost));
+    })?;
+    if rows.is_empty() {
+        return Ok((None, false, 0));
+    }
+    let mut token_sum: Option<i64> = None;
+    let mut null_tokens = 0i64;
+    let mut cost = 0i64;
+    for (tok, c, cur) in rows {
+        match tok {
+            Some(t) => token_sum = Some(token_sum.unwrap_or(0) + t),
+            None => null_tokens += 1,
         }
-        Ok((tokens, true, cost))
-    })
+        if let Some(c) = c {
+            cost += crate::services::currency::try_convert(db, c, &cur, target_currency)?.0;
+        }
+    }
+    if token_sum.is_none() && null_tokens > 0 {
+        return Ok((None, false, cost));
+    }
+    Ok((token_sum, token_sum.is_some(), cost))
 }
 
 fn other_expenses(db: &Db, project_id: Option<&str>) -> AppResult<i64> {
     db.with_conn(|conn| {
         let v: i64 = if let Some(pid) = project_id {
-            conn.query_row(
+            conn.exec_first(
                 "SELECT COALESCE(SUM(amount_minor),0) FROM project_expenses
-                 WHERE project_id = ?1 AND is_subscription_allocation = 0",
-                [pid],
-                |r| r.get(0),
+                 WHERE project_id = ? AND is_subscription_allocation = 0",
+                (pid,),
             )?
+            .unwrap_or(0)
         } else {
-            conn.query_row(
+            conn.query_first(
                 "SELECT COALESCE(SUM(amount_minor),0) FROM project_expenses WHERE is_subscription_allocation = 0",
-                [],
-                |r| r.get(0),
             )?
+            .unwrap_or(0)
         };
         Ok(v)
     })
@@ -213,12 +200,12 @@ fn other_expenses(db: &Db, project_id: Option<&str>) -> AppResult<i64> {
 fn subscription_allocation(db: &Db, project_id: Option<&str>) -> AppResult<i64> {
     db.with_conn(|conn| {
         let v: i64 = if let Some(pid) = project_id {
-            conn.query_row(
+            conn.exec_first(
                 "SELECT COALESCE(SUM(amount_minor),0) FROM project_expenses
-                 WHERE project_id = ?1 AND is_subscription_allocation = 1",
-                [pid],
-                |r| r.get(0),
+                 WHERE project_id = ? AND is_subscription_allocation = 1",
+                (pid,),
             )?
+            .unwrap_or(0)
         } else {
             0
         };
@@ -229,12 +216,12 @@ fn subscription_allocation(db: &Db, project_id: Option<&str>) -> AppResult<i64> 
 fn recognized_revenue(db: &Db, project_id: Option<&str>) -> AppResult<i64> {
     db.with_conn(|conn| {
         let v: i64 = if let Some(pid) = project_id {
-            conn.query_row(
+            conn.exec_first(
                 "SELECT COALESCE(SUM(amount_minor),0) FROM revenue_records
-                 WHERE project_id = ?1 AND kind = 'recognized'",
-                [pid],
-                |r| r.get(0),
+                 WHERE project_id = ? AND kind = 'recognized'",
+                (pid,),
             )?
+            .unwrap_or(0)
         } else {
             0
         };
@@ -245,11 +232,11 @@ fn recognized_revenue(db: &Db, project_id: Option<&str>) -> AppResult<i64> {
 fn payments_received(db: &Db, project_id: Option<&str>) -> AppResult<i64> {
     db.with_conn(|conn| {
         let v: i64 = if let Some(pid) = project_id {
-            conn.query_row(
-                "SELECT COALESCE(SUM(amount_minor),0) FROM payments WHERE project_id = ?1",
-                [pid],
-                |r| r.get(0),
+            conn.exec_first(
+                "SELECT COALESCE(SUM(amount_minor),0) FROM payments WHERE project_id = ?",
+                (pid,),
             )?
+            .unwrap_or(0)
         } else {
             0
         };
@@ -261,23 +248,21 @@ fn live_tracking(
     db: &Db,
 ) -> AppResult<(Option<String>, Option<String>, String, Option<String>)> {
     db.with_conn(|conn| {
-        let last_event_at: Option<String> = conn
-            .query_row(
-                "SELECT occurred_at FROM cursor_events ORDER BY received_at DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let open_agent: bool = conn.query_row(
-            "SELECT COUNT(*) FROM activity_intervals WHERE kind = 'agent' AND ended_at IS NULL",
-            [],
-            |r| r.get::<_, i64>(0),
-        )? > 0;
-        let open_dev: bool = conn.query_row(
-            "SELECT COUNT(*) FROM activity_intervals WHERE kind = 'developer' AND ended_at IS NULL",
-            [],
-            |r| r.get::<_, i64>(0),
-        )? > 0;
+        let last_event_at: Option<String> = conn.query_first(
+            "SELECT occurred_at FROM cursor_events ORDER BY received_at DESC LIMIT 1",
+        )?;
+        let open_agent: bool = conn
+            .query_first::<i64, _>(
+                "SELECT COUNT(*) FROM activity_intervals WHERE kind = 'agent' AND ended_at IS NULL",
+            )?
+            .unwrap_or(0)
+            > 0;
+        let open_dev: bool = conn
+            .query_first::<i64, _>(
+                "SELECT COUNT(*) FROM activity_intervals WHERE kind = 'developer' AND ended_at IS NULL",
+            )?
+            .unwrap_or(0)
+            > 0;
         let mode = if open_agent {
             "agent"
         } else if open_dev {
@@ -286,14 +271,10 @@ fn live_tracking(
             "idle"
         }
         .to_string();
-        let row: Option<(Option<String>, Option<String>)> = conn
-            .query_row(
-                "SELECT task_id, conversation_id FROM activity_intervals
-                 WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
+        let row: Option<(Option<String>, Option<String>)> = conn.query_first(
+            "SELECT task_id, conversation_id FROM activity_intervals
+             WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
+        )?;
         Ok((
             row.as_ref().and_then(|r| r.0.clone()),
             row.as_ref().and_then(|r| r.1.clone()),
@@ -305,40 +286,52 @@ fn live_tracking(
 
 pub fn recent_events(db: &Db, project_id: Option<&str>, limit: i64) -> AppResult<Vec<ActivityEventDto>> {
     db.with_conn(|conn| {
-        let mut out = Vec::new();
-        if let Some(pid) = project_id {
-            let mut stmt = conn.prepare(
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )> = if let Some(pid) = project_id {
+            conn.exec(
                 "SELECT id, event_type, occurred_at, workspace_path, conversation_id, project_id, task_id, model
-                 FROM cursor_events WHERE project_id = ?1 ORDER BY occurred_at DESC LIMIT ?2",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![pid, limit], map_event)?;
-            for r in rows {
-                out.push(r?);
-            }
+                 FROM cursor_events WHERE project_id = ? ORDER BY occurred_at DESC LIMIT ?",
+                (pid, limit),
+            )?
         } else {
-            let mut stmt = conn.prepare(
+            conn.exec(
                 "SELECT id, event_type, occurred_at, workspace_path, conversation_id, project_id, task_id, model
-                 FROM cursor_events ORDER BY occurred_at DESC LIMIT ?1",
-            )?;
-            let rows = stmt.query_map([limit], map_event)?;
-            for r in rows {
-                out.push(r?);
-            }
-        }
-        Ok(out)
-    })
-}
-
-fn map_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityEventDto> {
-    Ok(ActivityEventDto {
-        id: r.get(0)?,
-        event_type: r.get(1)?,
-        occurred_at: r.get(2)?,
-        workspace_path: r.get(3)?,
-        conversation_id: r.get(4)?,
-        project_id: r.get(5)?,
-        task_id: r.get(6)?,
-        model: r.get(7)?,
+                 FROM cursor_events ORDER BY occurred_at DESC LIMIT ?",
+                (limit,),
+            )?
+        };
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    event_type,
+                    occurred_at,
+                    workspace_path,
+                    conversation_id,
+                    project_id,
+                    task_id,
+                    model,
+                )| ActivityEventDto {
+                    id,
+                    event_type,
+                    occurred_at,
+                    workspace_path,
+                    conversation_id,
+                    project_id,
+                    task_id,
+                    model,
+                },
+            )
+            .collect())
     })
 }
 
@@ -350,8 +343,10 @@ pub fn project_financials_dto(
         .ok_or_else(|| crate::error::AppError::Message("project not found".into()))?;
     let rate: LaborRate = settings::labor_rate(db)?;
     let work = project_work_ms(db, Some(project_id))?;
-    let labor = rate.labor_cost_for_ms(work.combined_ms).unwrap_or(0);
-    let (_, _, ai) = usage_totals(db, Some(project_id))?;
+    let labor_native = rate.labor_cost_for_ms(work.combined_ms).unwrap_or(0);
+    let labor =
+        crate::services::currency::try_convert(db, labor_native, &rate.currency, &p.currency)?.0;
+    let (_, _, ai) = usage_totals(db, Some(project_id), &p.currency)?;
     let other = other_expenses(db, Some(project_id))?;
     let sub = subscription_allocation(db, Some(project_id))?;
     let recognized = recognized_revenue(db, Some(project_id))?;

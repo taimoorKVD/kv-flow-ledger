@@ -2,7 +2,7 @@
 
 **Version:** 0.1.0-mvp  
 **Date:** 2026-10-20  
-**Stack:** Tauri 2 · Rust · React · TypeScript · Vite · SQLite · Zustand · Apache ECharts  
+**Stack:** Tauri 2 · Rust · React · TypeScript · Vite · MySQL · Zustand · Apache ECharts  
 **Remote:** `git@github.com:taimoorKVD/kv-flow-ledger.git`
 
 ## 1. Product summary
@@ -40,7 +40,7 @@ FlowLedger is a **local-first** desktop application that:
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Tauri 2 Desktop Shell                        │
 │  ┌──────────────────────┐   ┌────────────────────────────────┐  │
-│  │ React + TS Frontend  │◄─►│ Rust Core (SQLite + engines)   │  │
+│  │ React + TS Frontend  │◄─►│ Rust Core (MySQL + engines)    │  │
 │  │ · Overview UI        │   │ · Event ingest + dedupe        │  │
 │  │ · Projects / Tasks   │   │ · Attribution                  │  │
 │  │ · Activity Timeline  │   │ · Time interval merger         │  │
@@ -50,7 +50,7 @@ FlowLedger is a **local-first** desktop application that:
 │  └──────────────────────┘   └───────────────┬────────────────┘  │
 │           Tauri events (live updates)        │                  │
 │                                              ▼                  │
-│                                   SQLite (app data dir)         │
+│                         MySQL (local Laragon / FLOWLEDGER_DATABASE_URL) │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -72,7 +72,7 @@ FlowLedger is a **local-first** desktop application that:
 
 1. Cursor fires a hook → script reads stdin JSON → POSTs sanitized metadata to `127.0.0.1:<port>/hooks/ingest`.
 2. Rust validates schema, computes event fingerprint, inserts into `cursor_events` (immutable) inside a transaction.
-3. Attribution service resolves project/task or marks `unassigned`.
+3. Attribution service resolves project/task via conversation mapping, then workspace→project. When the project is known and the conversation is new, ingest auto-creates and links a task (`Chat · {id prefix}`); known conversations keep monitoring the same task. Unknown workspaces stay `unassigned`.
 4. Time engine opens/closes `activity_intervals` (developer / agent / overlap bookkeeping).
 5. UI polls / receives Tauri events and re-renders dashboard metrics from SQL aggregates.
 6. Usage CSV/manual entries land in `ai_usage_records` with `verification_status` and `import_id` for idempotency.
@@ -80,9 +80,9 @@ FlowLedger is a **local-first** desktop application that:
 
 ## 6. Database principles
 
-- SQLite file in the OS app data directory (`flowledger.db`).
-- Versioned SQL migrations under `src-tauri/migrations/`.
-- Foreign keys ON; parameterized queries only.
+- Local MySQL (Laragon) via the sync `mysql` crate `Pool`. Default URL: `mysql://root@127.0.0.1:3306/flowledger` (`FLOWLEDGER_DATABASE_URL` override).
+- Versioned SQL migrations under `src-tauri/migrations/` (`001_initial_mysql.sql` for MySQL).
+- InnoDB + foreign keys; parameterized queries only.
 - Raw events immutable; corrections via `task_attributions` / adjustment rows.
 - Monetary amounts stored as **integer minor units** (e.g. cents) with ISO currency codes.
 - Time: wall-clock UTC timestamps for history; monotonic clock for open intervals; sleep/wake reconciliation on resume.
@@ -109,7 +109,7 @@ FlowLedger is a **local-first** desktop application that:
 
 Without changing domain models:
 
-- Replace SQLite with Postgres adapter.
+- Swap MySQL for Postgres adapter if needed for SaaS.
 - Add auth identity on `user_id` columns (nullable in MVP).
 - Sync layer over encrypted remote store.
 - Multi-seat labor rates and RBAC.

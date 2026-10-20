@@ -1,10 +1,11 @@
 use crate::db::Db;
 use crate::error::AppResult;
 use crate::models::HookEventIn;
-use crate::services::{attribution, settings};
+use crate::services::{attribution, projects, settings};
 use crate::time_engine::IntervalKind;
 use chrono::{Duration, Utc};
-use rusqlite::{params, OptionalExtension};
+use mysql::prelude::*;
+use mysql::params;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -36,13 +37,10 @@ pub fn fingerprint(event: &HookEventIn) -> String {
 pub fn ingest_event(db: &Db, mut event: HookEventIn) -> AppResult<IngestOutcome> {
     let fp = fingerprint(&event);
     let duplicate = db.with_conn(|conn| {
-        let exists: Option<String> = conn
-            .query_row(
-                "SELECT id FROM cursor_events WHERE fingerprint = ?1",
-                [&fp],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let exists: Option<String> = conn.exec_first(
+            "SELECT id FROM cursor_events WHERE fingerprint = ?",
+            (&fp,),
+        )?;
         Ok(exists.is_some())
     })?;
     if duplicate {
@@ -64,11 +62,25 @@ pub fn ingest_event(db: &Db, mut event: HookEventIn) -> AppResult<IngestOutcome>
         .as_ref()
         .and_then(|v| v.first())
         .cloned();
-    let attr = attribution::resolve(
+    let mut attr = attribution::resolve(
         db,
         event.conversation_id.as_deref(),
         workspace_path.as_deref(),
     )?;
+
+    // Chat-driven tasks: new conversation in a mapped workspace creates + links a task.
+    if attr.task_id.is_none() {
+        if let (Some(project_id), Some(cid)) =
+            (attr.project_id.clone(), event.conversation_id.clone())
+        {
+            let (pid, tid) = projects::ensure_task_for_conversation(db, &project_id, &cid)?;
+            attr.project_id = Some(pid);
+            attr.task_id = Some(tid);
+            attr.source = "auto_conversation".into();
+            attr.confidence = "high".into();
+            attr.unassigned_reason = None;
+        }
+    }
 
     // Privacy: strip prompt text unless explicitly enabled
     let store_prompts = settings::get(db, "store_prompt_text")?.unwrap_or_else(|| "false".into())
@@ -93,47 +105,51 @@ pub fn ingest_event(db: &Db, mut event: HookEventIn) -> AppResult<IngestOutcome>
     });
 
     db.with_conn(|conn| {
-        conn.execute(
+        let payload_json = event.payload.to_string();
+        conn.exec_drop(
             "INSERT INTO cursor_events (
                 id, fingerprint, event_type, occurred_at, received_at, workspace_path,
                 conversation_id, generation_id, model, model_id, agent_state, source,
                 payload_json, project_id, task_id
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'cursor_hook',?12,?13,?14)",
-            params![
-                event_id,
-                fp,
-                event.event_type,
-                occurred_at,
-                received_at,
-                workspace_path,
-                event.conversation_id,
-                event.generation_id,
-                event.model,
-                event.model_id,
-                agent_state,
-                event.payload.to_string(),
-                attr.project_id,
-                attr.task_id
-            ],
+             ) VALUES (:id,:fp,:etype,:occurred,:received,:workspace,
+                :conversation,:generation,:model,:model_id,:agent_state,'cursor_hook',
+                :payload,:project_id,:task_id)",
+            params! {
+                "id" => &event_id,
+                "fp" => &fp,
+                "etype" => &event.event_type,
+                "occurred" => &occurred_at,
+                "received" => &received_at,
+                "workspace" => &workspace_path,
+                "conversation" => &event.conversation_id,
+                "generation" => &event.generation_id,
+                "model" => &event.model,
+                "model_id" => &event.model_id,
+                "agent_state" => &agent_state,
+                "payload" => &payload_json,
+                "project_id" => &attr.project_id,
+                "task_id" => &attr.task_id,
+            },
         )?;
 
         if let Some(cid) = &event.conversation_id {
-            conn.execute(
+            conn.exec_drop(
                 "INSERT INTO cursor_conversations (id, conversation_id, project_id, task_id, workspace_path, first_seen_at, last_seen_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-                 ON CONFLICT(conversation_id) DO UPDATE SET
-                   last_seen_at = excluded.last_seen_at,
-                   workspace_path = COALESCE(excluded.workspace_path, cursor_conversations.workspace_path),
-                   project_id = COALESCE(cursor_conversations.project_id, excluded.project_id),
-                   task_id = COALESCE(cursor_conversations.task_id, excluded.task_id)",
-                params![
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   last_seen_at = VALUES(last_seen_at),
+                   workspace_path = COALESCE(VALUES(workspace_path), workspace_path),
+                   project_id = COALESCE(project_id, VALUES(project_id)),
+                   task_id = COALESCE(task_id, VALUES(task_id))",
+                (
                     Uuid::new_v4().to_string(),
                     cid,
-                    attr.project_id,
-                    attr.task_id,
-                    workspace_path,
-                    occurred_at
-                ],
+                    &attr.project_id,
+                    &attr.task_id,
+                    &workspace_path,
+                    &occurred_at,
+                    &occurred_at,
+                ),
             )?;
         }
         Ok(())
@@ -219,12 +235,13 @@ fn open_interval(
 ) -> AppResult<()> {
     // If already open same kind for same conversation, keep it open (no duplicate).
     let has_open = db.with_conn(|conn| {
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM activity_intervals WHERE kind = ?1 AND ended_at IS NULL
-             AND IFNULL(conversation_id, '') = IFNULL(?2, '')",
-            params![kind_str(kind), event.conversation_id],
-            |r| r.get(0),
-        )?;
+        let n: i64 = conn
+            .exec_first(
+                "SELECT COUNT(*) FROM activity_intervals WHERE kind = ? AND ended_at IS NULL
+                 AND IFNULL(conversation_id, '') = IFNULL(?, '')",
+                (kind_str(kind), &event.conversation_id),
+            )?
+            .unwrap_or(0);
         Ok(n > 0)
     })?;
     if has_open {
@@ -244,20 +261,20 @@ fn open_interval(
 
     let id = Uuid::new_v4().to_string();
     db.with_conn(|conn| {
-        conn.execute(
+        conn.exec_drop(
             "INSERT INTO activity_intervals (
                 id, project_id, task_id, conversation_id, kind, started_at, source_event_id, notes
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
                 id,
-                attr.project_id,
-                attr.task_id,
-                event.conversation_id,
+                &attr.project_id,
+                &attr.task_id,
+                &event.conversation_id,
                 kind_str(interval_kind),
                 occurred_at,
                 event_id,
-                workspace
-            ],
+                workspace,
+            ),
         )?;
         Ok(())
     })
@@ -265,14 +282,10 @@ fn open_interval(
 
 pub fn close_open_intervals(db: &Db, kind: IntervalKind, ended_at: &str) -> AppResult<()> {
     db.with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, started_at FROM activity_intervals WHERE kind = ?1 AND ended_at IS NULL",
+        let rows: Vec<(String, String)> = conn.exec(
+            "SELECT id, started_at FROM activity_intervals WHERE kind = ? AND ended_at IS NULL",
+            (kind_str(kind),),
         )?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map([kind_str(kind)], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
         for (id, started) in rows {
             let start = chrono::DateTime::parse_from_rfc3339(&started)
                 .map(|d| d.with_timezone(&Utc))
@@ -281,9 +294,9 @@ pub fn close_open_intervals(db: &Db, kind: IntervalKind, ended_at: &str) -> AppR
                 .map(|d| d.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
             let dur = (end - start).num_milliseconds().max(0);
-            conn.execute(
-                "UPDATE activity_intervals SET ended_at = ?1, duration_ms = ?2 WHERE id = ?3",
-                params![ended_at, dur, id],
+            conn.exec_drop(
+                "UPDATE activity_intervals SET ended_at = ?, duration_ms = ? WHERE id = ?",
+                (ended_at, dur, id),
             )?;
         }
         Ok(())
@@ -295,14 +308,9 @@ pub fn apply_idle_timeout(db: &Db, now: chrono::DateTime<Utc>) -> AppResult<()> 
     let mins = settings::idle_threshold_minutes(db)?;
     let threshold = Duration::minutes(mins);
     db.with_conn(|conn| {
-        let mut stmt = conn.prepare(
+        let rows: Vec<(String, String)> = conn.query(
             "SELECT id, started_at FROM activity_intervals WHERE kind = 'developer' AND ended_at IS NULL",
         )?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
         for (id, started) in rows {
             let start = chrono::DateTime::parse_from_rfc3339(&started)
                 .map(|d| d.with_timezone(&Utc))
@@ -312,21 +320,21 @@ pub fn apply_idle_timeout(db: &Db, now: chrono::DateTime<Utc>) -> AppResult<()> 
                 // for open intervals that went stale — production adds heartbeats from editor events.
                 let end = start + threshold;
                 let dur = threshold.num_milliseconds();
-                conn.execute(
-                    "UPDATE activity_intervals SET ended_at = ?1, duration_ms = ?2 WHERE id = ?3",
-                    params![end.to_rfc3339(), dur, id],
+                conn.exec_drop(
+                    "UPDATE activity_intervals SET ended_at = ?, duration_ms = ? WHERE id = ?",
+                    (end.to_rfc3339(), dur, &id),
                 )?;
-                conn.execute(
+                conn.exec_drop(
                     "INSERT INTO activity_intervals (id, project_id, task_id, conversation_id, kind, started_at, ended_at, duration_ms, notes)
-                     SELECT ?1, project_id, task_id, conversation_id, 'idle_excluded', ?2, ?3, ?4, 'idle_timeout'
-                     FROM activity_intervals WHERE id = ?5",
-                    params![
+                     SELECT ?, project_id, task_id, conversation_id, 'idle_excluded', ?, ?, ?, 'idle_timeout'
+                     FROM activity_intervals WHERE id = ?",
+                    (
                         Uuid::new_v4().to_string(),
                         end.to_rfc3339(),
                         now.to_rfc3339(),
                         (now - end).num_milliseconds().max(0),
-                        id
-                    ],
+                        id,
+                    ),
                 )?;
             }
         }
@@ -345,17 +353,15 @@ pub struct IngestOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Db;
+    use crate::db::open_test_db;
     use crate::models::NewProject;
     use crate::services::projects;
     use crate::time_engine::compute_breakdown;
     use serde_json::json;
-    use tempfile::tempdir;
 
     #[test]
     fn rejects_duplicate_events() {
-        let dir = tempdir().unwrap();
-        let db = Db::open(dir.path().join("i.db")).unwrap();
+        let db = open_test_db().unwrap();
         let ev = HookEventIn {
             event_type: "sessionStart".into(),
             occurred_at: Some("2026-01-01T00:00:00Z".into()),
@@ -376,8 +382,7 @@ mod tests {
 
     #[test]
     fn tracks_agent_and_developer_union() {
-        let dir = tempdir().unwrap();
-        let db = Db::open(dir.path().join("t.db")).unwrap();
+        let db = open_test_db().unwrap();
         let p = projects::create_project(
             &db,
             NewProject {
@@ -427,14 +432,13 @@ mod tests {
         db.with_conn(|conn| {
             // Ensure we have developer 0-10 and agent 0-20 by adjusting agent start if needed
             let n: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM activity_intervals WHERE task_id = ?1",
-                    [&task.id],
-                    |r| r.get(0),
-                )
-                .unwrap();
+                .exec_first(
+                    "SELECT COUNT(*) FROM activity_intervals WHERE task_id = ?",
+                    (&task.id,),
+                )?
+                .unwrap_or(0);
             assert!(n >= 1);
-            let b = projects::task_time_breakdown(conn, &task.id).unwrap();
+            let b = projects::task_time_breakdown(conn, &task.id)?;
             // At minimum agent or combined > 0
             assert!(b.combined_ms > 0 || b.agent_ms > 0 || b.developer_ms > 0);
             let _ = compute_breakdown(&[]);
@@ -445,16 +449,15 @@ mod tests {
 
     #[test]
     fn unknown_workspace_stays_unassigned() {
-        let dir = tempdir().unwrap();
-        let db = Db::open(dir.path().join("u.db")).unwrap();
+        let db = open_test_db().unwrap();
         ingest_event(
             &db,
             HookEventIn {
-                event_type: "workspaceOpen".into(),
+                event_type: "sessionStart".into(),
                 occurred_at: Some("2026-01-01T00:00:00Z".into()),
                 workspace_roots: Some(vec!["D:\\unknown".into()]),
-                conversation_id: None,
-                generation_id: None,
+                conversation_id: Some("conv-orphan".into()),
+                generation_id: Some("g-orphan".into()),
                 model: None,
                 model_id: None,
                 agent_state: None,
@@ -465,5 +468,123 @@ mod tests {
         .unwrap();
         let items = attribution::list_unassigned(&db).unwrap();
         assert!(!items.is_empty());
+        let tasks = projects::list_tasks(&db, None).unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn auto_creates_task_for_new_conversation_in_mapped_workspace() {
+        let db = open_test_db().unwrap();
+        let p = projects::create_project(
+            &db,
+            NewProject {
+                name: "Mapped".into(),
+                client: None,
+                description: None,
+                git_repository: None,
+                billing_model: "fixed_price".into(),
+                contracted_budget_minor: 0,
+                currency: "USD".into(),
+                workspaces: vec!["D:\\mapped".into()],
+            },
+        )
+        .unwrap();
+
+        ingest_event(
+            &db,
+            HookEventIn {
+                event_type: "sessionStart".into(),
+                occurred_at: Some("2026-01-01T00:00:00Z".into()),
+                workspace_roots: Some(vec!["D:\\mapped".into()]),
+                conversation_id: Some("conv-new-12345678".into()),
+                generation_id: Some("g1".into()),
+                model: None,
+                model_id: None,
+                agent_state: None,
+                cursor_version: None,
+                payload: json!({}),
+            },
+        )
+        .unwrap();
+
+        let tasks = projects::list_tasks(&db, Some(&p.id)).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Chat · conv-new");
+        assert_eq!(tasks[0].status, "in_progress");
+
+        let linked: Option<String> = db
+            .with_conn(|conn| {
+                Ok(conn.exec_first(
+                    "SELECT task_id FROM cursor_conversations WHERE conversation_id = ?",
+                    ("conv-new-12345678",),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(linked.as_deref(), Some(tasks[0].id.as_str()));
+    }
+
+    #[test]
+    fn reuses_task_for_same_conversation() {
+        let db = open_test_db().unwrap();
+        let p = projects::create_project(
+            &db,
+            NewProject {
+                name: "Reuse".into(),
+                client: None,
+                description: None,
+                git_repository: None,
+                billing_model: "fixed_price".into(),
+                contracted_budget_minor: 0,
+                currency: "USD".into(),
+                workspaces: vec!["D:\\reuse".into()],
+            },
+        )
+        .unwrap();
+
+        let first = HookEventIn {
+            event_type: "sessionStart".into(),
+            occurred_at: Some("2026-01-01T00:00:00Z".into()),
+            workspace_roots: Some(vec!["D:\\reuse".into()]),
+            conversation_id: Some("conv-reuse".into()),
+            generation_id: Some("g1".into()),
+            model: None,
+            model_id: None,
+            agent_state: None,
+            cursor_version: None,
+            payload: json!({}),
+        };
+        ingest_event(&db, first).unwrap();
+
+        ingest_event(
+            &db,
+            HookEventIn {
+                event_type: "beforeSubmitPrompt".into(),
+                occurred_at: Some("2026-01-01T00:05:00Z".into()),
+                workspace_roots: Some(vec!["D:\\reuse".into()]),
+                conversation_id: Some("conv-reuse".into()),
+                generation_id: Some("g2".into()),
+                model: None,
+                model_id: None,
+                agent_state: None,
+                cursor_version: None,
+                payload: json!({}),
+            },
+        )
+        .unwrap();
+
+        let tasks = projects::list_tasks(&db, Some(&p.id)).unwrap();
+        assert_eq!(tasks.len(), 1);
+
+        let event_task_ids: Vec<Option<String>> = db
+            .with_conn(|conn| {
+                Ok(conn.exec(
+                    "SELECT task_id FROM cursor_events WHERE conversation_id = ? ORDER BY occurred_at",
+                    ("conv-reuse",),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(event_task_ids.len(), 2);
+        assert_eq!(event_task_ids[0], event_task_ids[1]);
+        assert_eq!(event_task_ids[0].as_ref(), Some(&tasks[0].id));
     }
 }

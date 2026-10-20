@@ -29,8 +29,9 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from(".").join("flowledger-data"));
             std::fs::create_dir_all(&data_dir)?;
-            let db_path = data_dir.join("flowledger.db");
-            let db = Db::open(&db_path)?;
+            let db_url = std::env::var("FLOWLEDGER_DATABASE_URL")
+                .unwrap_or_else(|_| db::DEFAULT_DATABASE_URL.to_string());
+            let db = Db::open(&db_url)?;
 
             let resource_dir = app
                 .path()
@@ -58,6 +59,7 @@ pub fn run() {
             commands::create_project,
             commands::list_tasks,
             commands::create_task,
+            commands::update_task_title,
             commands::update_project_finances,
             commands::get_settings,
             commands::save_settings,
@@ -74,6 +76,9 @@ pub fn run() {
             commands::hooks_status,
             commands::ingest_test_event,
             commands::apply_idle_sweep,
+            commands::list_currencies,
+            commands::list_exchange_rates,
+            commands::upsert_exchange_rate,
         ])
         .run(tauri::generate_context!())
         .expect("error while running FlowLedger");

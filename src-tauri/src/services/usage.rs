@@ -1,7 +1,8 @@
 use crate::db::Db;
 use crate::error::AppResult;
 use crate::models::UsageRecordInput;
-use rusqlite::params;
+use mysql::prelude::*;
+use mysql::{params, TxOpts};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -45,30 +46,30 @@ pub fn add_manual(db: &Db, input: UsageRecordInput) -> AppResult<UsageRecordDto>
     };
 
     db.with_conn(|conn| {
-        conn.execute(
-            "INSERT INTO ai_usage_records (
+        conn.exec_drop(
+            "INSERT IGNORE INTO ai_usage_records (
                 id, provider, model, occurred_at, project_id, task_id, input_tokens, output_tokens,
                 cached_tokens, total_tokens, reported_cost_minor, currency, billing_source,
                 verification_status, attribution_method, external_key, notes
-             ) VALUES (?1,'cursor',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'manual',?14,?15)
-             ON CONFLICT(external_key) DO NOTHING",
-            params![
-                id,
-                input.model,
-                occurred,
-                input.project_id,
-                input.task_id,
-                input.input_tokens,
-                input.output_tokens,
-                input.cached_tokens,
-                total,
-                input.reported_cost_minor,
-                input.currency,
-                input.billing_source,
-                input.verification_status,
-                external,
-                input.notes
-            ],
+             ) VALUES (:id,'cursor',:model,:occurred,:project_id,:task_id,:input_tokens,:output_tokens,
+                :cached_tokens,:total_tokens,:cost,:currency,:billing,:verification,'manual',:external,:notes)",
+            params! {
+                "id" => &id,
+                "model" => &input.model,
+                "occurred" => &occurred,
+                "project_id" => &input.project_id,
+                "task_id" => &input.task_id,
+                "input_tokens" => input.input_tokens,
+                "output_tokens" => input.output_tokens,
+                "cached_tokens" => input.cached_tokens,
+                "total_tokens" => total,
+                "cost" => input.reported_cost_minor,
+                "currency" => &input.currency,
+                "billing" => &input.billing_source,
+                "verification" => &input.verification_status,
+                "external" => &external,
+                "notes" => &input.notes,
+            },
         )?;
         Ok(())
     })?;
@@ -94,13 +95,10 @@ pub fn import_csv(db: &Db, filename: &str, csv_text: &str) -> AppResult<ImportRe
     let content_hash = hex::encode(hasher.finalize());
 
     let existing: Option<String> = db.with_conn(|conn| {
-        Ok(conn
-            .query_row(
-                "SELECT id FROM usage_imports WHERE content_hash = ?1",
-                [&content_hash],
-                |r| r.get(0),
-            )
-            .optional()?)
+        Ok(conn.exec_first(
+            "SELECT id FROM usage_imports WHERE content_hash = ?",
+            (&content_hash,),
+        )?)
     })?;
     if let Some(id) = existing {
         return Ok(ImportResult {
@@ -130,11 +128,11 @@ pub fn import_csv(db: &Db, filename: &str, csv_text: &str) -> AppResult<ImportRe
         .collect();
 
     db.with_conn_mut(|conn| {
-        let tx = conn.transaction()?;
-        tx.execute(
+        let mut tx = conn.start_transaction(TxOpts::default())?;
+        tx.exec_drop(
             "INSERT INTO usage_imports (id, source, filename, imported_at, record_count, content_hash)
-             VALUES (?1, 'csv', ?2, ?3, 0, ?4)",
-            params![import_id, filename, now, content_hash],
+             VALUES (?, 'csv', ?, ?, 0, ?)",
+            (&import_id, filename, &now, &content_hash),
         )?;
 
         for (idx, line) in lines.iter().skip(1).enumerate() {
@@ -189,32 +187,31 @@ pub fn import_csv(db: &Db, filename: &str, csv_text: &str) -> AppResult<ImportRe
                 cleaned.parse::<f64>().ok().map(|v| (v * 100.0).round() as i64)
             });
 
-            let changed = tx.execute(
-                "INSERT INTO ai_usage_records (
+            tx.exec_drop(
+                "INSERT IGNORE INTO ai_usage_records (
                     id, import_id, provider, model, occurred_at, input_tokens, output_tokens,
                     cached_tokens, total_tokens, reported_cost_minor, currency, billing_source,
                     verification_status, attribution_method, external_key
-                 ) VALUES (?1,?2,'cursor',?3,?4,?5,?6,?7,?8,?9,'USD','cursor_csv','imported_csv','import',?10)
-                 ON CONFLICT(external_key) DO NOTHING",
-                params![
+                 ) VALUES (?,?,'cursor',?,?,?,?,?,?,?,'USD','cursor_csv','imported_csv','import',?)",
+                (
                     Uuid::new_v4().to_string(),
-                    import_id,
-                    model,
-                    occurred,
+                    &import_id,
+                    &model,
+                    &occurred,
                     input_tokens,
                     output_tokens,
                     cached_tokens,
                     total_tokens,
                     reported_cost_minor,
-                    external_key
-                ],
+                    &external_key,
+                ),
             )?;
-            inserted += changed as i64;
+            inserted += tx.affected_rows() as i64;
         }
 
-        tx.execute(
-            "UPDATE usage_imports SET record_count = ?1 WHERE id = ?2",
-            params![inserted, import_id],
+        tx.exec_drop(
+            "UPDATE usage_imports SET record_count = ? WHERE id = ?",
+            (inserted, &import_id),
         )?;
         tx.commit()?;
         Ok(())
@@ -258,61 +255,72 @@ pub struct ImportResult {
 
 pub fn list_usage(db: &Db, project_id: Option<&str>) -> AppResult<Vec<UsageRecordDto>> {
     db.with_conn(|conn| {
-        let mut out = Vec::new();
-        if let Some(pid) = project_id {
-            let mut stmt = conn.prepare(
+        let rows: Vec<(
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            String,
+            String,
+            Option<String>,
+        )> = if let Some(pid) = project_id {
+            conn.exec(
                 "SELECT id, model, occurred_at, project_id, task_id, total_tokens, reported_cost_minor,
                         billing_source, verification_status, notes
                  FROM ai_usage_records
-                 WHERE project_id = ?1 OR task_id IN (SELECT id FROM tasks WHERE project_id = ?1)
+                 WHERE project_id = ? OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)
                  ORDER BY occurred_at DESC LIMIT 500",
-            )?;
-            let rows = stmt.query_map([pid], map_usage)?;
-            for r in rows {
-                out.push(r?);
-            }
+                (pid, pid),
+            )?
         } else {
-            let mut stmt = conn.prepare(
+            conn.query(
                 "SELECT id, model, occurred_at, project_id, task_id, total_tokens, reported_cost_minor,
                         billing_source, verification_status, notes
                  FROM ai_usage_records ORDER BY occurred_at DESC LIMIT 500",
-            )?;
-            let rows = stmt.query_map([], map_usage)?;
-            for r in rows {
-                out.push(r?);
-            }
-        }
-        Ok(out)
+            )?
+        };
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    model,
+                    occurred_at,
+                    project_id,
+                    task_id,
+                    total_tokens,
+                    reported_cost_minor,
+                    billing_source,
+                    verification_status,
+                    notes,
+                )| UsageRecordDto {
+                    id,
+                    model,
+                    occurred_at,
+                    project_id,
+                    task_id,
+                    total_tokens,
+                    reported_cost_minor,
+                    billing_source,
+                    verification_status,
+                    notes,
+                },
+            )
+            .collect())
     })
 }
-
-fn map_usage(r: &rusqlite::Row<'_>) -> rusqlite::Result<UsageRecordDto> {
-    Ok(UsageRecordDto {
-        id: r.get(0)?,
-        model: r.get(1)?,
-        occurred_at: r.get(2)?,
-        project_id: r.get(3)?,
-        task_id: r.get(4)?,
-        total_tokens: r.get(5)?,
-        reported_cost_minor: r.get(6)?,
-        billing_source: r.get(7)?,
-        verification_status: r.get(8)?,
-        notes: r.get(9)?,
-    })
-}
-
-use rusqlite::OptionalExtension;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Db;
-    use tempfile::tempdir;
+    use crate::db::open_test_db;
 
     #[test]
     fn manual_unavailable_tokens_stay_null() {
-        let dir = tempdir().unwrap();
-        let db = Db::open(dir.path().join("u.db")).unwrap();
+        let db = open_test_db().unwrap();
         let rec = add_manual(
             &db,
             UsageRecordInput {
@@ -339,8 +347,7 @@ mod tests {
 
     #[test]
     fn csv_import_is_idempotent() {
-        let dir = tempdir().unwrap();
-        let db = Db::open(dir.path().join("c.db")).unwrap();
+        let db = open_test_db().unwrap();
         let csv = "id,model,tokens,cost\nr1,gpt,1000,1.50\n";
         let a = import_csv(&db, "a.csv", csv).unwrap();
         assert_eq!(a.inserted, 1);

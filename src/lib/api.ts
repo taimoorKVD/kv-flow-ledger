@@ -118,8 +118,36 @@ export const api = {
   listTasks: (projectId?: string) =>
     call<Task[]>("list_tasks", { projectId: projectId ?? null }),
   createTask: (input: Record<string, unknown>) => call<Task>("create_task", { input }),
-  updateProjectFinances: (projectId: string, update: Record<string, number>) =>
-    call<void>("update_project_finances", { projectId, update }),
+  updateTaskTitle: (taskId: string, title: string) =>
+    call<Task>("update_task_title", { taskId, title }),
+  updateProjectFinances: (
+    projectId: string,
+    update: Record<string, number | string>
+  ) => call<void>("update_project_finances", { projectId, update }),
+  listCurrencies: () =>
+    call<Array<{ code: string; name: string; symbol: string }>>("list_currencies"),
+  listExchangeRates: () =>
+    call<
+      Array<{
+        id: string;
+        base_currency: string;
+        quote_currency: string;
+        rate_numeric: string;
+        effective_on: string;
+      }>
+    >("list_exchange_rates"),
+  upsertExchangeRate: (input: {
+    baseCurrency: string;
+    quoteCurrency: string;
+    rateNumeric: string;
+    effectiveOn?: string;
+  }) =>
+    call<Record<string, string>>("upsert_exchange_rate", {
+      baseCurrency: input.baseCurrency,
+      quoteCurrency: input.quoteCurrency,
+      rateNumeric: input.rateNumeric,
+      effectiveOn: input.effectiveOn ?? null,
+    }),
   getSettings: () => call<{ values: Record<string, string> }>("get_settings"),
   saveSettings: (values: Record<string, string>) => call<void>("save_settings", { values }),
   getDashboard: (projectId?: string) =>

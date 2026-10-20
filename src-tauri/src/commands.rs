@@ -2,7 +2,7 @@ use crate::error::AppResult;
 use crate::finance::ProjectFinancials;
 use crate::models::*;
 use crate::services::{
-    attribution, dashboard, hooks, ingest, projects, settings, usage,
+    attribution, currency, dashboard, hooks, ingest, projects, settings, usage,
 };
 use crate::state::AppState;
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ pub fn get_app_info(state: State<'_, AppState>) -> AppResult<serde_json::Value> 
     Ok(serde_json::json!({
         "name": "FlowLedger",
         "version": env!("CARGO_PKG_VERSION"),
-        "db_path": state.db.path().display().to_string(),
+        "db_path": state.db.label(),
         "ingest_listening": *state.ingest_listening.read(),
     }))
 }
@@ -36,6 +36,15 @@ pub fn list_tasks(state: State<'_, AppState>, project_id: Option<String>) -> App
 #[tauri::command]
 pub fn create_task(state: State<'_, AppState>, input: NewTask) -> AppResult<Task> {
     projects::create_task(&state.db, input)
+}
+
+#[tauri::command]
+pub fn update_task_title(
+    state: State<'_, AppState>,
+    task_id: String,
+    title: String,
+) -> AppResult<Task> {
+    projects::update_task_title(&state.db, &task_id, &title)
 }
 
 #[tauri::command]
@@ -154,4 +163,34 @@ pub fn ingest_test_event(
 #[tauri::command]
 pub fn apply_idle_sweep(state: State<'_, AppState>) -> AppResult<()> {
     ingest::apply_idle_timeout(&state.db, chrono::Utc::now())
+}
+
+#[tauri::command]
+pub fn list_currencies() -> Vec<currency::CurrencyInfo> {
+    currency::supported_currencies()
+}
+
+#[tauri::command]
+pub fn list_exchange_rates(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<currency::ExchangeRateDto>> {
+    currency::list_rates(&state.db)
+}
+
+#[tauri::command]
+pub fn upsert_exchange_rate(
+    state: State<'_, AppState>,
+    base_currency: String,
+    quote_currency: String,
+    rate_numeric: String,
+    effective_on: Option<String>,
+) -> AppResult<currency::ExchangeRateDto> {
+    let on = effective_on.unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string());
+    currency::upsert_rate(
+        &state.db,
+        &base_currency,
+        &quote_currency,
+        &rate_numeric,
+        &on,
+    )
 }

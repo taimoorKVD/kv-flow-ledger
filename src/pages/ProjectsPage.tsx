@@ -12,19 +12,40 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   const setToast = useAppStore((s) => s.setToast);
 
   const [showProject, setShowProject] = useState(false);
-  const [showTask, setShowTask] = useState(false);
   const [pName, setPName] = useState("");
   const [pClient, setPClient] = useState("");
   const [pWorkspace, setPWorkspace] = useState("");
   const [pBudget, setPBudget] = useState("0");
-  const [tTitle, setTTitle] = useState("");
-  const [tConv, setTConv] = useState("");
+  const [pCurrency, setPCurrency] = useState("USD");
   const [budget, setBudget] = useState("");
   const [revenue, setRevenue] = useState("");
   const [received, setReceived] = useState("");
   const [other, setOther] = useState("");
+  const [projCurrency, setProjCurrency] = useState("USD");
+  const [currencies, setCurrencies] = useState<
+    Array<{ code: string; name: string; symbol: string }>
+  >([]);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState("");
 
   const project = projects.find((p) => p.id === selectedProjectId);
+  const ccy = project?.currency || projCurrency || "USD";
+
+  useEffect(() => {
+    void api.listCurrencies().then(setCurrencies).catch(() => {
+      setCurrencies([
+        { code: "USD", name: "US Dollar", symbol: "$" },
+        { code: "PKR", name: "Pakistani Rupee", symbol: "Rs" },
+      ]);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (project) {
+      setProjCurrency(project.currency || "USD");
+      setBudget(String(project.contracted_budget_minor / 100));
+    }
+  }, [project]);
 
   async function createProject() {
     if (!pName.trim()) return setToast("Enter project name");
@@ -35,29 +56,13 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
       git_repository: null,
       billing_model: "fixed_price",
       contracted_budget_minor: Math.round(Number(pBudget || 0) * 100),
-      currency: "USD",
+      currency: pCurrency,
       workspaces: pWorkspace.trim() ? [pWorkspace.trim()] : [],
     });
     setSelectedProjectId(created.id);
     setShowProject(false);
     setPName("");
-    setToast("Project created");
-    await onRefresh();
-  }
-
-  async function createTask() {
-    if (!selectedProjectId) return setToast("Create a project first");
-    if (!tTitle.trim()) return setToast("Enter task title");
-    await api.createTask({
-      project_id: selectedProjectId,
-      title: tTitle.trim(),
-      description: null,
-      conversation_id: tConv.trim() || null,
-    });
-    setShowTask(false);
-    setTTitle("");
-    setTConv("");
-    setToast("Task created");
+    setToast(`Project created (${pCurrency})`);
     await onRefresh();
   }
 
@@ -68,8 +73,22 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
       recognized_revenue_minor: Math.round(Number(revenue || 0) * 100),
       payments_received_minor: Math.round(Number(received || 0) * 100),
       other_expenses_minor: Math.round(Number(other || 0) * 100),
+      currency: projCurrency,
     });
-    setToast("Project finances saved");
+    setToast(`Project finances saved in ${projCurrency}`);
+    await onRefresh();
+  }
+
+  async function saveTaskTitle(taskId: string) {
+    const title = editingTitle.trim();
+    if (!title) {
+      setToast("Enter a task title");
+      return;
+    }
+    await api.updateTaskTitle(taskId, title);
+    setEditingTaskId(null);
+    setEditingTitle("");
+    setToast("Task renamed");
     await onRefresh();
   }
 
@@ -79,9 +98,6 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
         <button type="button" className="btn" onClick={() => setShowProject(true)}>
           <Plus className="h-4 w-4" /> New project
         </button>
-        <button type="button" className="btn-ghost" onClick={() => setShowTask(true)}>
-          <Plus className="h-4 w-4" /> Add task
-        </button>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -89,7 +105,10 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-bold">Tasks & conversations</h2>
-              <p className="tiny mt-1">Task associations persist across Cursor sessions.</p>
+              <p className="tiny mt-1">
+                Tasks are created when you start or continue a Cursor chat in a mapped workspace.
+                Click a title to rename.
+              </p>
             </div>
           </div>
           <div className="mt-4 overflow-x-auto">
@@ -105,13 +124,42 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
               <tbody>
                 {tasks.length === 0 && (
                   <tr>
-                    <td colSpan={4}>No tasks</td>
+                    <td colSpan={4}>No tasks yet — open a Cursor chat in a mapped workspace.</td>
                   </tr>
                 )}
                 {tasks.map((t) => (
                   <tr key={t.id}>
                     <td>
-                      <div className="font-semibold">{t.title}</div>
+                      {editingTaskId === t.id ? (
+                        <input
+                          className="field"
+                          value={editingTitle}
+                          autoFocus
+                          onChange={(e) => setEditingTitle(e.target.value)}
+                          onBlur={() => void saveTaskTitle(t.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void saveTaskTitle(t.id);
+                            }
+                            if (e.key === "Escape") {
+                              setEditingTaskId(null);
+                              setEditingTitle("");
+                            }
+                          }}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className="font-semibold text-left hover:underline"
+                          onClick={() => {
+                            setEditingTaskId(t.id);
+                            setEditingTitle(t.title);
+                          }}
+                        >
+                          {t.title}
+                        </button>
+                      )}
                     </td>
                     <td>
                       <span className="tag">{t.status}</span>
@@ -139,15 +187,32 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
                   Workspaces: {project.workspaces.length ? project.workspaces.join(", ") : "None mapped"}
                 </div>
               </div>
-              <Field label="Contracted budget (USD)" value={budget} onChange={setBudget} placeholder={String(project.contracted_budget_minor / 100)} />
-              <Field label="Recognized revenue (USD)" value={revenue} onChange={setRevenue} />
-              <Field label="Payments received (USD)" value={received} onChange={setReceived} />
-              <Field label="Other expenses (USD)" value={other} onChange={setOther} />
+              <div>
+                <label className="label">Project currency</label>
+                <select
+                  className="field mt-1"
+                  value={projCurrency}
+                  onChange={(e) => setProjCurrency(e.target.value)}
+                >
+                  {currencies.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.code} — {c.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="tiny mt-1">
+                  Labor (from Settings salary currency) and AI costs are converted into this currency for P&amp;L.
+                </p>
+              </div>
+              <Field label={`Contracted budget (${ccy})`} value={budget} onChange={setBudget} placeholder={String(project.contracted_budget_minor / 100)} />
+              <Field label={`Recognized revenue (${ccy})`} value={revenue} onChange={setRevenue} />
+              <Field label={`Payments received (${ccy})`} value={received} onChange={setReceived} />
+              <Field label={`Other expenses (${ccy})`} value={other} onChange={setOther} />
               <button type="button" className="btn w-full" onClick={() => void saveFinances()}>
                 Save project finances
               </button>
               <p className="tiny">
-                Profit uses recognized revenue. Cash collected and contract budget are reported separately.
+                All commercial figures for this project are stored and calculated in {ccy}. Profit uses recognized revenue, not budget.
               </p>
             </div>
           )}
@@ -157,7 +222,8 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
       <div className="panel p-5">
         <h2 className="font-bold">Project attribution policy</h2>
         <p className="mt-2 text-sm text-muted">
-          Workspace → project; linked conversation → task. Ambiguous sessions remain unassigned until reviewed.
+          Workspace → project. A new or continuing Cursor chat in a mapped workspace auto-creates or
+          monitors a task linked to that conversation. Unmapped workspaces remain unassigned until reviewed.
         </p>
         <UnassignedReview onRefresh={onRefresh} />
       </div>
@@ -167,13 +233,21 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
           <Field label="Name" value={pName} onChange={setPName} />
           <Field label="Client" value={pClient} onChange={setPClient} />
           <Field label="Workspace directory (absolute path)" value={pWorkspace} onChange={setPWorkspace} />
-          <Field label="Contracted budget (USD)" value={pBudget} onChange={setPBudget} />
-        </Modal>
-      )}
-      {showTask && (
-        <Modal title="Create task" onClose={() => setShowTask(false)} onSave={() => void createTask()}>
-          <Field label="Task name" value={tTitle} onChange={setTTitle} />
-          <Field label="Cursor conversation id (optional)" value={tConv} onChange={setTConv} />
+          <div>
+            <label className="label">Currency</label>
+            <select
+              className="field mt-1"
+              value={pCurrency}
+              onChange={(e) => setPCurrency(e.target.value)}
+            >
+              {currencies.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.code} — {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Field label={`Contracted budget (${pCurrency})`} value={pBudget} onChange={setPBudget} />
         </Modal>
       )}
     </section>

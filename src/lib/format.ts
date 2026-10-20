@@ -1,10 +1,25 @@
+const SYMBOLS: Record<string, string> = {
+  USD: "$",
+  PKR: "Rs ",
+  EUR: "€",
+  GBP: "£",
+  AED: "AED ",
+  SAR: "SAR ",
+  INR: "₹",
+};
+
 export function money(minor: number, currency = "USD"): string {
+  const code = (currency || "USD").toUpperCase();
   const sign = minor < 0 ? "-" : "";
   const abs = Math.abs(minor);
   const whole = Math.floor(abs / 100);
   const frac = abs % 100;
-  const symbol = currency === "USD" ? "$" : `${currency} `;
+  const symbol = SYMBOLS[code] ?? `${code} `;
   return `${sign}${symbol}${whole.toLocaleString("en-US")}.${frac.toString().padStart(2, "0")}`;
+}
+
+export function currencyLabel(code: string): string {
+  return (code || "USD").toUpperCase();
 }
 
 export function dur(ms: number): string {

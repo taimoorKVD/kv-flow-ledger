@@ -2,7 +2,7 @@ use crate::db::Db;
 use crate::error::AppResult;
 use crate::models::UnassignedItem;
 use crate::services::projects;
-use rusqlite::{params, OptionalExtension};
+use mysql::prelude::*;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -81,13 +81,10 @@ fn lookup_conversation(
     conversation_id: &str,
 ) -> AppResult<Option<(Option<String>, Option<String>)>> {
     db.with_conn(|conn| {
-        let row = conn
-            .query_row(
-                "SELECT project_id, task_id FROM cursor_conversations WHERE conversation_id = ?1",
-                [conversation_id],
-                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?)),
-            )
-            .optional()?;
+        let row: Option<(Option<String>, Option<String>)> = conn.exec_first(
+            "SELECT project_id, task_id FROM cursor_conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        )?;
         Ok(row)
     })
 }
@@ -101,17 +98,17 @@ pub fn record_unassigned(
 ) -> AppResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     db.with_conn(|conn| {
-        conn.execute(
+        conn.exec_drop(
             "INSERT INTO unassigned_activity (id, event_id, workspace_path, conversation_id, reason, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
-            params![
+             VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (
                 Uuid::new_v4().to_string(),
                 event_id,
                 workspace_path,
                 conversation_id,
                 reason,
-                now
-            ],
+                now,
+            ),
         )?;
         Ok(())
     })
@@ -119,24 +116,28 @@ pub fn record_unassigned(
 
 pub fn list_unassigned(db: &Db) -> AppResult<Vec<UnassignedItem>> {
     db.with_conn(|conn| {
-        let mut stmt = conn.prepare(
+        let rows: Vec<(
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        )> = conn.query(
             "SELECT id, workspace_path, conversation_id, reason, created_at
              FROM unassigned_activity WHERE status = 'pending' ORDER BY created_at DESC LIMIT 200",
         )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(UnassignedItem {
-                id: r.get(0)?,
-                workspace_path: r.get(1)?,
-                conversation_id: r.get(2)?,
-                reason: r.get(3)?,
-                created_at: r.get(4)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row?);
-        }
-        Ok(out)
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, workspace_path, conversation_id, reason, created_at)| UnassignedItem {
+                    id,
+                    workspace_path,
+                    conversation_id,
+                    reason,
+                    created_at,
+                },
+            )
+            .collect())
     })
 }
 
@@ -148,39 +149,46 @@ pub fn assign_unassigned(
 ) -> AppResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     db.with_conn(|conn| {
-        let (workspace, conversation): (Option<String>, Option<String>) = conn.query_row(
-            "SELECT workspace_path, conversation_id FROM unassigned_activity WHERE id = ?1",
-            [unassigned_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+        let row: Option<(Option<String>, Option<String>)> = conn.exec_first(
+            "SELECT workspace_path, conversation_id FROM unassigned_activity WHERE id = ?",
+            (unassigned_id,),
         )?;
+        let (workspace, conversation) = row.unwrap_or((None, None));
         if let Some(cid) = conversation.as_ref() {
-            conn.execute(
+            conn.exec_drop(
                 "INSERT INTO cursor_conversations (id, conversation_id, project_id, task_id, workspace_path, first_seen_at, last_seen_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-                 ON CONFLICT(conversation_id) DO UPDATE SET
-                   project_id = excluded.project_id,
-                   task_id = excluded.task_id,
-                   workspace_path = COALESCE(excluded.workspace_path, cursor_conversations.workspace_path),
-                   last_seen_at = excluded.last_seen_at",
-                params![
+                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   project_id = VALUES(project_id),
+                   task_id = VALUES(task_id),
+                   workspace_path = COALESCE(VALUES(workspace_path), workspace_path),
+                   last_seen_at = VALUES(last_seen_at)",
+                (
                     Uuid::new_v4().to_string(),
                     cid,
                     project_id,
                     task_id,
-                    workspace,
-                    now
-                ],
+                    &workspace,
+                    &now,
+                    &now,
+                ),
             )?;
         }
-        conn.execute(
+        conn.exec_drop(
             "INSERT INTO task_attributions (id, target_type, target_id, project_id, task_id, source, confidence, created_at, created_by)
-             VALUES (?1, 'unassigned_review', ?2, ?3, ?4, 'manual_review', 'high', ?5, 'user')",
-            params![Uuid::new_v4().to_string(), unassigned_id, project_id, task_id, now],
+             VALUES (?, 'unassigned_review', ?, ?, ?, 'manual_review', 'high', ?, 'user')",
+            (
+                Uuid::new_v4().to_string(),
+                unassigned_id,
+                project_id,
+                task_id,
+                &now,
+            ),
         )?;
-        conn.execute(
-            "UPDATE unassigned_activity SET status = 'resolved', resolved_at = ?1,
-             resolved_project_id = ?2, resolved_task_id = ?3 WHERE id = ?4",
-            params![now, project_id, task_id, unassigned_id],
+        conn.exec_drop(
+            "UPDATE unassigned_activity SET status = 'resolved', resolved_at = ?,
+             resolved_project_id = ?, resolved_task_id = ? WHERE id = ?",
+            (&now, project_id, task_id, unassigned_id),
         )?;
         Ok(())
     })
@@ -188,11 +196,9 @@ pub fn assign_unassigned(
 
 pub fn unassigned_count(db: &Db) -> AppResult<i64> {
     db.with_conn(|conn| {
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM unassigned_activity WHERE status = 'pending'",
-            [],
-            |r| r.get(0),
-        )?;
+        let n: i64 = conn
+            .query_first("SELECT COUNT(*) FROM unassigned_activity WHERE status = 'pending'")?
+            .unwrap_or(0);
         Ok(n)
     })
 }

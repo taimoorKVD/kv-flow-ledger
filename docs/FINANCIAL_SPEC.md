@@ -45,10 +45,19 @@ Completion forecasts are withheld unless a grounded remaining-work estimate exis
 
 ## Multi-currency
 
-Exchange rates are stored as decimal strings with an effective date. Conversion:
+Each **project** has a working currency (USD, PKR, EUR, GBP, AED, SAR, INR, …).
+
+- Budget, recognized revenue, payments, and other expenses are entered and stored in the **project currency**.
+- Salary / labor valuation uses Settings **default_currency**.
+- For project P&L:  
+  `labor_in_project_currency = convert(labor_in_salary_currency, salary_currency → project_currency)`
+- AI usage costs are converted from each record’s currency into the project currency when aggregating.
+- Exchange rates are stored as decimal strings (`quote` units per 1 `base` unit) with an effective date.
 
 ```
 quote_minor = round(base_minor × rate)
 ```
 
-Historical calculations should use the rate effective on the transaction date.
+Example: USD→PKR rate `278.50` means `$1.00` → `Rs 278.50`.
+
+Missing rates: conversion falls back to the original amount without inventing a rate; add rates under Settings.

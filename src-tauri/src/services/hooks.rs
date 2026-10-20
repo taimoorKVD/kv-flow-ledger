@@ -1,6 +1,7 @@
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
 use crate::services::settings;
+use mysql::prelude::*;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
@@ -133,11 +134,11 @@ pub fn install(db: &Db, resource_dir: PathBuf, ingest_port: u16, token: &str) ->
     let now = chrono::Utc::now().to_rfc3339();
     let detail = hooks_path.display().to_string();
     db.with_conn(|conn| {
-        conn.execute(
+        conn.exec_drop(
             "INSERT INTO integration_status (id, integration, status, detail, updated_at)
-             VALUES ('cursor_hooks', 'cursor_hooks', 'installed', ?1, ?2)
-             ON CONFLICT(integration) DO UPDATE SET status = 'installed', detail = excluded.detail, updated_at = excluded.updated_at",
-            rusqlite::params![detail, now],
+             VALUES ('cursor_hooks', 'cursor_hooks', 'installed', ?, ?)
+             ON DUPLICATE KEY UPDATE status = 'installed', detail = VALUES(detail), updated_at = VALUES(updated_at)",
+            (&detail, &now),
         )?;
         Ok(())
     })?;
@@ -194,10 +195,10 @@ pub fn uninstall(db: &Db) -> AppResult<HookInstallStatus> {
     settings::set(db, "hooks_install_detail", "Uninstalled")?;
     let now = chrono::Utc::now().to_rfc3339();
     db.with_conn(|conn| {
-        conn.execute(
-            "UPDATE integration_status SET status = 'not_installed', detail = 'Uninstalled', updated_at = ?1
+        conn.exec_drop(
+            "UPDATE integration_status SET status = 'not_installed', detail = 'Uninstalled', updated_at = ?
              WHERE integration = 'cursor_hooks'",
-            [&now],
+            (&now,),
         )?;
         Ok(())
     })?;

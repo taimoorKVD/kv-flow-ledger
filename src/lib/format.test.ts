@@ -5,6 +5,7 @@ describe("format helpers", () => {
   it("formats money from minor units", () => {
     expect(money(12345)).toBe("$123.45");
     expect(money(-50)).toBe("-$0.50");
+    expect(money(150050, "PKR")).toBe("Rs 1,500.50");
   });
 
   it("formats duration", () => {

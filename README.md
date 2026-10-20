@@ -6,7 +6,7 @@ Remote: `git@github.com:taimoorKVD/kv-flow-ledger.git`
 
 ## Features (MVP)
 
-- Tauri 2 + React + TypeScript + SQLite
+- Tauri 2 + React + TypeScript + MySQL (local Laragon)
 - Horizontal enterprise UI (see `prototypes/prototype_4.html`)
 - Official Cursor Hooks ingest over localhost
 - Task work time as **union** of developer + agent intervals (no double counting)
@@ -21,10 +21,16 @@ Remote: `git@github.com:taimoorKVD/kv-flow-ledger.git`
 - Visual Studio 2022 Build Tools with **Desktop development with C++**
 - WebView2 (usually preinstalled)
 - Cursor IDE (for live hook events)
+- **Local MySQL** (e.g. Laragon) with database `flowledger` created
+
+Default connection: `mysql://root@127.0.0.1:3306/flowledger` (override with `FLOWLEDGER_DATABASE_URL`).
 
 ## Setup
 
 ```bash
+# Ensure MySQL is running and DB exists, e.g.:
+#   CREATE DATABASE flowledger CHARACTER SET utf8mb4;
+
 npm install
 npm run tauri dev
 ```
@@ -41,7 +47,7 @@ npm run tauri build
 # Frontend unit tests
 npm test
 
-# Rust unit tests (time engine, finance, ingest)
+# Rust unit tests (time engine, finance, ingest) — uses MySQL DB flowledger_test
 cd src-tauri && cargo test
 ```
 
@@ -74,4 +80,4 @@ Hooks never block Cursor (`continue: true` / `permission: allow`) and do not sto
 
 ## Privacy
 
-All data stays on disk in the OS app data directory. No source code, prompts, or chat transcripts are uploaded.
+All data stays in your local MySQL instance. No source code, prompts, or chat transcripts are uploaded.

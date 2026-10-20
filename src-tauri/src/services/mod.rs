@@ -1,4 +1,5 @@
 pub mod attribution;
+pub mod currency;
 pub mod dashboard;
 pub mod hooks;
 pub mod ingest;
