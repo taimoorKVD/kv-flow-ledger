@@ -226,13 +226,67 @@ pub fn get_project(db: &Db, id: &str) -> AppResult<Option<Project>> {
 }
 
 pub fn find_project_by_workspace(db: &Db, workspace: &str) -> AppResult<Option<String>> {
-    let normalized = normalize_path(workspace);
+    let variants = workspace_lookup_variants(workspace);
     db.with_conn(|conn| {
-        let id: Option<String> = conn.exec_first(
-            "SELECT project_id FROM project_workspaces WHERE LOWER(path) = LOWER(?)",
+        for candidate in &variants {
+            let id: Option<String> = conn.exec_first(
+                "SELECT project_id FROM project_workspaces WHERE LOWER(path) = LOWER(?)",
+                (candidate,),
+            )?;
+            if id.is_some() {
+                return Ok(id);
+            }
+        }
+        Ok(None)
+    })
+}
+
+fn workspace_lookup_variants(path: &str) -> Vec<String> {
+    let normalized = normalize_path(path);
+    let mut out = vec![
+        normalized.clone(),
+        normalized.to_ascii_lowercase(),
+        path.trim().to_string(),
+        path.trim().to_ascii_lowercase(),
+    ];
+    if normalized.len() >= 2 && normalized.as_bytes()[1] == b':' {
+        let drive = normalized.chars().next().unwrap().to_ascii_lowercase();
+        let rest = normalized[2..].replace('\\', "/");
+        let rest = rest.trim_start_matches('/');
+        out.push(format!("/{drive}:/{rest}"));
+        out.push(format!("/{drive}:{rest}"));
+        out.push(format!("{}:/{}", drive, rest));
+        out.push(format!("{}:\\{}", drive.to_ascii_uppercase(), rest.replace('/', "\\")));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub fn add_workspace_to_project(db: &Db, project_id: &str, workspace: &str) -> AppResult<()> {
+    let normalized = normalize_path(workspace);
+    if normalized.is_empty() {
+        return Ok(());
+    }
+    let now = Utc::now().to_rfc3339();
+    db.with_conn(|conn| {
+        let existing: Option<String> = conn.exec_first(
+            "SELECT id FROM project_workspaces WHERE project_id = ? AND LOWER(path) = LOWER(?)",
+            (project_id, &normalized),
+        )?;
+        if existing.is_some() {
+            return Ok(());
+        }
+        // Another project may already own this path — reassign to this project.
+        conn.exec_drop(
+            "DELETE FROM project_workspaces WHERE LOWER(path) = LOWER(?)",
             (&normalized,),
         )?;
-        Ok(id)
+        conn.exec_drop(
+            "INSERT INTO project_workspaces (id, project_id, path, created_at) VALUES (?, ?, ?, ?)",
+            (Uuid::new_v4().to_string(), project_id, &normalized, &now),
+        )?;
+        Ok(())
     })
 }
 
@@ -488,21 +542,27 @@ pub fn update_project_finances(
         let mut tx = conn.start_transaction(TxOpts::default())?;
         let currency = crate::services::currency::normalize(&update.currency);
         tx.exec_drop(
-            "UPDATE projects SET contracted_budget_minor = ?, currency = ? WHERE id = ?",
-            (update.contracted_budget_minor, &currency, project_id),
+            "UPDATE projects SET contracted_budget_minor = ?, currency = ?, labor_rate_override_minor = ? WHERE id = ?",
+            (
+                update.contracted_budget_minor,
+                &currency,
+                update.labor_rate_override_minor,
+                project_id,
+            ),
         )?;
         tx.exec_drop(
             "DELETE FROM revenue_records WHERE project_id = ? AND kind = 'recognized'",
             (project_id,),
         )?;
+        // Always persist recognized revenue (including 0) so the form reloads correctly.
         tx.exec_drop(
             "INSERT INTO revenue_records (id, project_id, kind, amount_minor, currency, recognized_at, notes)
-             VALUES (?, ?, 'recognized', ?, COALESCE((SELECT currency FROM projects WHERE id = ?), 'USD'), ?, 'manual')",
+             VALUES (?, ?, 'recognized', ?, ?, ?, 'manual')",
             (
                 Uuid::new_v4().to_string(),
                 project_id,
                 update.recognized_revenue_minor,
-                project_id,
+                &currency,
                 &now,
             ),
         )?;
@@ -510,12 +570,12 @@ pub fn update_project_finances(
         if update.payments_received_minor > 0 {
             tx.exec_drop(
                 "INSERT INTO payments (id, project_id, amount_minor, currency, received_at, notes)
-                 VALUES (?, ?, ?, COALESCE((SELECT currency FROM projects WHERE id = ?), 'USD'), ?, 'manual')",
+                 VALUES (?, ?, ?, ?, ?, 'manual')",
                 (
                     Uuid::new_v4().to_string(),
                     project_id,
                     update.payments_received_minor,
-                    project_id,
+                    &currency,
                     &now,
                 ),
             )?;
@@ -524,15 +584,16 @@ pub fn update_project_finances(
             "DELETE FROM project_expenses WHERE project_id = ? AND category = 'other' AND notes = 'rollup'",
             (project_id,),
         )?;
+        // Other expenses are optional — only store when > 0.
         if update.other_expenses_minor > 0 {
             tx.exec_drop(
                 "INSERT INTO project_expenses (id, project_id, category, amount_minor, currency, occurred_at, notes)
-                 VALUES (?, ?, 'other', ?, COALESCE((SELECT currency FROM projects WHERE id = ?), 'USD'), ?, 'rollup')",
+                 VALUES (?, ?, 'other', ?, ?, ?, 'rollup')",
                 (
                     Uuid::new_v4().to_string(),
                     project_id,
                     update.other_expenses_minor,
-                    project_id,
+                    &currency,
                     &now,
                 ),
             )?;

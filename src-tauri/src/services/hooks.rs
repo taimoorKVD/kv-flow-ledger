@@ -17,17 +17,38 @@ fn hook_script_path(app_dir: &PathBuf) -> PathBuf {
 
 pub fn status(db: &Db) -> AppResult<HookInstallStatus> {
     let path = hooks_json_path()?;
-    let installed = if path.exists() {
+    let home = dirs::home_dir();
+    let script_ok = home
+        .as_ref()
+        .map(|h| h.join(".cursor").join("flowledger").join("flowledger-hook.mjs").exists())
+        .unwrap_or(false);
+    let hooks_ok = if path.exists() {
         let text = fs::read_to_string(&path).unwrap_or_default();
         text.contains("flowledger-hook")
     } else {
         false
     };
+    let installed = hooks_ok && script_ok;
     // Keep ~/.cursor/flowledger/config.json aligned with current ingest port/token.
     if installed {
         let _ = sync_runtime_config(db);
     }
-    let detail = settings::get(db, "hooks_install_detail")?.unwrap_or_default();
+    let stored = settings::get(db, "hooks_install_detail")?.unwrap_or_default();
+    let detail = if installed {
+        if stored.is_empty() {
+            format!("Verified at {}", path.display())
+        } else {
+            stored
+        }
+    } else if hooks_ok && !script_ok {
+        "hooks.json references FlowLedger, but hook script is missing — reinstall".into()
+    } else if !hooks_ok && script_ok {
+        "Hook script present, but hooks.json is not wired — install hooks".into()
+    } else if stored.is_empty() {
+        "Not installed".into()
+    } else {
+        stored
+    };
     Ok(HookInstallStatus {
         installed,
         hooks_path: path.display().to_string(),

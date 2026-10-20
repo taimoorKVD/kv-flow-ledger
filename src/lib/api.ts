@@ -16,6 +16,14 @@ export type Project = {
   workspaces: string[];
 };
 
+export type WorkspacePathCheck = {
+  valid: boolean;
+  exists: boolean;
+  is_dir: boolean;
+  normalized: string;
+  detail: string;
+};
+
 export type Task = {
   id: string;
   project_id: string;
@@ -125,8 +133,17 @@ export const api = {
     call<Task>("update_task_title", { taskId, title }),
   updateProjectFinances: (
     projectId: string,
-    update: Record<string, number | string>
+    update: {
+      contracted_budget_minor: number;
+      recognized_revenue_minor: number;
+      payments_received_minor: number;
+      other_expenses_minor: number;
+      labor_rate_override_minor?: number | null;
+      currency: string;
+    }
   ) => call<void>("update_project_finances", { projectId, update }),
+  validateWorkspacePath: (path: string) =>
+    call<WorkspacePathCheck>("validate_workspace_path", { path }),
   listCurrencies: () =>
     call<Array<{ code: string; name: string; symbol: string }>>("list_currencies"),
   listExchangeRates: () =>
@@ -185,8 +202,12 @@ export const api = {
       },
     }),
   dismissNoiseUnassigned: () => call<number>("dismiss_noise_unassigned"),
-  assignUnassigned: (unassignedId: string, projectId: string, taskId: string) =>
-    call<void>("assign_unassigned", { unassignedId, projectId, taskId }),
+  assignUnassigned: (unassignedId: string, projectId: string, taskId?: string | null) =>
+    call<void>("assign_unassigned", {
+      unassignedId,
+      projectId,
+      taskId: taskId ?? null,
+    }),
   addUsage: (input: Record<string, unknown>) => call<UsageRecord>("add_usage_record", { input }),
   importUsageCsv: (filename: string, csvText: string) =>
     call<{ inserted: number; skipped_duplicate_import: boolean }>("import_usage_csv", {

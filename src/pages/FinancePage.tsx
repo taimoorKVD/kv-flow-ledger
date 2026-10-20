@@ -40,9 +40,9 @@ export default function FinancePage() {
   return (
     <section className="space-y-4">
       <div className="grid gap-3 md:grid-cols-4">
-        <Metric label="Contracted value" value={money(fin.contracted_budget_minor, fin.currency)} />
-        <Metric label="Recognized revenue" value={money(fin.recognized_revenue_minor, fin.currency)} />
-        <Metric label="Received cash" value={money(fin.payments_received_minor, fin.currency)} />
+        <Metric label="Total payment" value={money(fin.contracted_budget_minor, fin.currency)} />
+        <Metric label="Received payment" value={money(fin.payments_received_minor, fin.currency)} />
+        <Metric label="Labor cost" value={money(fin.labor_cost_minor, fin.currency)} />
         <Metric
           label="Economic profit / loss"
           value={money(fin.economic_profit_minor, fin.currency)}

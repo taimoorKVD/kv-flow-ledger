@@ -1,8 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
-import { api } from "@/lib/api";
-import { dur } from "@/lib/format";
+import { FolderOpen, Pencil, Plus, Trash2 } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { api, type WorkspacePathCheck } from "@/lib/api";
+import { dur, money } from "@/lib/format";
+import { FilterBar, PaginationBar, useClientPage } from "@/components/ListControls";
 import { useAppStore } from "@/stores/appStore";
+
+const TASK_PAGE_SIZE = 10;
 
 export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<void> }) {
   const projects = useAppStore((s) => s.projects);
@@ -16,12 +20,15 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   const [pName, setPName] = useState("");
   const [pClient, setPClient] = useState("");
   const [pWorkspace, setPWorkspace] = useState("");
+  const [pWorkspaceCheck, setPWorkspaceCheck] = useState<WorkspacePathCheck | null>(null);
   const [pBudget, setPBudget] = useState("0");
   const [pCurrency, setPCurrency] = useState("USD");
   const [budget, setBudget] = useState("");
   const [revenue, setRevenue] = useState("");
   const [received, setReceived] = useState("");
   const [other, setOther] = useState("");
+  const [laborRate, setLaborRate] = useState("");
+  const [computedLabor, setComputedLabor] = useState(0);
   const [projCurrency, setProjCurrency] = useState("USD");
   const [currencies, setCurrencies] = useState<
     Array<{ code: string; name: string; symbol: string }>
@@ -29,9 +36,28 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [taskSearch, setTaskSearch] = useState("");
+  const [taskStatus, setTaskStatus] = useState("all");
+  const [taskPage, setTaskPage] = useState(1);
 
   const project = projects.find((p) => p.id === selectedProjectId);
   const ccy = project?.currency || projCurrency || "USD";
+
+  const filteredTasks = tasks.filter((t) => {
+    if (taskStatus !== "all" && t.status !== taskStatus) return false;
+    if (taskSearch.trim()) {
+      const q = taskSearch.trim().toLowerCase();
+      if (!t.title.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+  const taskStatuses = Array.from(new Set(tasks.map((t) => t.status))).sort();
+  const { slice: pagedTasks, total: taskTotal, totalPages: taskPages, page: safeTaskPage } =
+    useClientPage(filteredTasks, taskPage, TASK_PAGE_SIZE);
+
+  useEffect(() => {
+    setTaskPage(1);
+  }, [taskSearch, taskStatus, selectedProjectId]);
 
   useEffect(() => {
     void api.listCurrencies().then(setCurrencies).catch(() => {
@@ -43,17 +69,69 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   }, []);
 
   useEffect(() => {
-    if (project) {
-      setProjCurrency(project.currency || "USD");
-      setBudget(String(project.contracted_budget_minor / 100));
+    if (!project || !selectedProjectId) {
+      setBudget("");
+      setRevenue("");
+      setReceived("");
+      setOther("");
+      setLaborRate("");
+      setComputedLabor(0);
+      return;
     }
-  }, [project]);
+    setProjCurrency(project.currency || "USD");
+    setBudget(String(project.contracted_budget_minor / 100));
+    setLaborRate(
+      project.labor_rate_override_minor != null && project.labor_rate_override_minor > 0
+        ? String(project.labor_rate_override_minor / 100)
+        : ""
+    );
+    void api
+      .getProjectFinancials(selectedProjectId)
+      .then((fin) => {
+        setBudget(String(fin.contracted_budget_minor / 100));
+        setRevenue(String(fin.recognized_revenue_minor / 100));
+        setReceived(String(fin.payments_received_minor / 100));
+        setOther(
+          fin.other_expenses_minor > 0 ? String(fin.other_expenses_minor / 100) : ""
+        );
+        setComputedLabor(fin.labor_cost_minor);
+      })
+      .catch(() => {
+        setRevenue("");
+        setReceived("");
+        setOther("");
+        setComputedLabor(0);
+      });
+  }, [project, selectedProjectId]);
+
+  useEffect(() => {
+    if (!pWorkspace.trim()) {
+      setPWorkspaceCheck(null);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void api
+        .validateWorkspacePath(pWorkspace)
+        .then(setPWorkspaceCheck)
+        .catch(() =>
+          setPWorkspaceCheck({
+            valid: false,
+            exists: false,
+            is_dir: false,
+            normalized: pWorkspace,
+            detail: "Could not validate path",
+          })
+        );
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [pWorkspace]);
 
   function openCreateModal() {
     setEditingProject(false);
     setPName("");
     setPClient("");
     setPWorkspace("");
+    setPWorkspaceCheck(null);
     setPBudget("0");
     setPCurrency("USD");
     setShowProject(true);
@@ -68,6 +146,21 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
     setPBudget(String(project.contracted_budget_minor / 100));
     setPCurrency(project.currency || "USD");
     setShowProject(true);
+  }
+
+  async function pickWorkspaceFolder() {
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Select project workspace folder",
+      });
+      if (typeof selected === "string" && selected) {
+        setPWorkspace(selected);
+      }
+    } catch {
+      setToast("Folder picker unavailable — paste an absolute path");
+    }
   }
 
   async function saveProject() {
@@ -115,15 +208,22 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
 
   async function saveFinances() {
     if (!selectedProjectId) return;
+    const laborOverride =
+      laborRate.trim() === "" || Number(laborRate) <= 0
+        ? null
+        : Math.round(Number(laborRate) * 100);
     await api.updateProjectFinances(selectedProjectId, {
       contracted_budget_minor: Math.round(Number(budget || 0) * 100),
       recognized_revenue_minor: Math.round(Number(revenue || 0) * 100),
       payments_received_minor: Math.round(Number(received || 0) * 100),
       other_expenses_minor: Math.round(Number(other || 0) * 100),
+      labor_rate_override_minor: laborOverride,
       currency: projCurrency,
     });
     setToast(`Project finances saved in ${projCurrency}`);
     await onRefresh();
+    const fin = await api.getProjectFinancials(selectedProjectId);
+    setComputedLabor(fin.labor_cost_minor);
   }
 
   async function saveTaskTitle(taskId: string) {
@@ -174,7 +274,33 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
               </p>
             </div>
           </div>
-          <div className="mt-4 overflow-x-auto">
+          <FilterBar>
+            <div className="min-w-[160px] flex-1">
+              <label className="label">Search tasks</label>
+              <input
+                className="field mt-1"
+                value={taskSearch}
+                placeholder="Task title"
+                onChange={(e) => setTaskSearch(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="label">Status</label>
+              <select
+                className="field mt-1"
+                value={taskStatus}
+                onChange={(e) => setTaskStatus(e.target.value)}
+              >
+                <option value="all">All statuses</option>
+                {taskStatuses.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </FilterBar>
+          <div className="overflow-x-auto">
             <table className="table">
               <thead>
                 <tr>
@@ -185,12 +311,16 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
                 </tr>
               </thead>
               <tbody>
-                {tasks.length === 0 && (
+                {pagedTasks.length === 0 && (
                   <tr>
-                    <td colSpan={4}>No tasks yet — open a Cursor chat in a mapped workspace.</td>
+                    <td colSpan={4}>
+                      {!selectedProjectId
+                        ? "Select a project."
+                        : "No tasks yet — open a Cursor chat in a mapped workspace."}
+                    </td>
                   </tr>
                 )}
-                {tasks.map((t) => (
+                {pagedTasks.map((t) => (
                   <tr key={t.id}>
                     <td>
                       {editingTaskId === t.id ? (
@@ -234,11 +364,20 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
               </tbody>
             </table>
           </div>
+          <PaginationBar
+            page={safeTaskPage}
+            totalPages={taskPages}
+            total={taskTotal}
+            pageSize={TASK_PAGE_SIZE}
+            onPage={setTaskPage}
+          />
         </div>
 
         <div className="panel p-5">
-          <h2 className="text-lg font-bold">Project details</h2>
-          <p className="tiny mt-1">Enter commercial values independently from tracking.</p>
+          <h2 className="text-lg font-bold">Project finances</h2>
+          <p className="tiny mt-1">
+            Total payment, received cash, and labor are project-specific. Other cost is optional.
+          </p>
           {!project ? (
             <p className="mt-4 text-sm text-muted">Select or create a project.</p>
           ) : (
@@ -248,7 +387,8 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
                 <div className="mt-1 font-semibold">{project.name}</div>
                 {project.client && <div className="tiny mt-1">Client: {project.client}</div>}
                 <div className="tiny mt-1">
-                  Workspaces: {project.workspaces.length ? project.workspaces.join(", ") : "None mapped"}
+                  Workspaces:{" "}
+                  {project.workspaces.length ? project.workspaces.join(", ") : "None mapped"}
                 </div>
               </div>
               <div>
@@ -264,19 +404,54 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
                     </option>
                   ))}
                 </select>
+              </div>
+              <Field
+                label={`Total payment / contracted (${ccy})`}
+                value={budget}
+                onChange={setBudget}
+                placeholder="0"
+              />
+              <Field
+                label={`Recognized revenue (${ccy})`}
+                value={revenue}
+                onChange={setRevenue}
+                placeholder="0"
+              />
+              <Field
+                label={`Received payment (${ccy})`}
+                value={received}
+                onChange={setReceived}
+                placeholder="0"
+              />
+              <div>
+                <label className="label">
+                  Labor hourly rate override ({ccy}, optional)
+                </label>
+                <input
+                  className="field mt-1"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={laborRate}
+                  placeholder="Use Settings salary rate"
+                  onChange={(e) => setLaborRate(e.target.value)}
+                />
                 <p className="tiny mt-1">
-                  Labor (from Settings salary currency) and AI costs are converted into this currency for P&amp;L.
+                  Computed labor for tracked time:{" "}
+                  <strong>{money(computedLabor, ccy)}</strong>
                 </p>
               </div>
-              <Field label={`Contracted budget (${ccy})`} value={budget} onChange={setBudget} placeholder={String(project.contracted_budget_minor / 100)} />
-              <Field label={`Recognized revenue (${ccy})`} value={revenue} onChange={setRevenue} />
-              <Field label={`Payments received (${ccy})`} value={received} onChange={setReceived} />
-              <Field label={`Other expenses (${ccy})`} value={other} onChange={setOther} />
+              <Field
+                label={`Other expenses (${ccy}, optional)`}
+                value={other}
+                onChange={setOther}
+                placeholder="Leave blank if none"
+              />
               <button type="button" className="btn w-full" onClick={() => void saveFinances()}>
                 Save project finances
               </button>
               <p className="tiny">
-                All commercial figures for this project are stored and calculated in {ccy}. Profit uses recognized revenue, not budget.
+                All commercial figures for this project are stored and calculated in {ccy}.
               </p>
             </div>
           )}
@@ -286,8 +461,9 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
       <div className="panel p-5">
         <h2 className="font-bold">Project attribution policy</h2>
         <p className="mt-2 text-sm text-muted">
-          Map a workspace folder on a project once. Cursor chats in that folder auto-create tasks;
-          workspace-only activity uses a General task. Only unknown workspaces appear below for review.
+          Review is scoped to the selected project. Assigning maps the workspace folder to this
+          project and creates a General task when needed so future Cursor chats attribute
+          automatically.
         </p>
         <UnassignedReview onRefresh={onRefresh} />
       </div>
@@ -301,7 +477,35 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
         >
           <Field label="Name" value={pName} onChange={setPName} />
           <Field label="Client" value={pClient} onChange={setPClient} />
-          <Field label="Workspace directory (absolute path)" value={pWorkspace} onChange={setPWorkspace} />
+          <div>
+            <label className="label">Workspace directory</label>
+            <div className="mt-1 flex gap-2">
+              <input
+                className={`field flex-1 ${
+                  pWorkspaceCheck?.valid
+                    ? "field-ok"
+                    : pWorkspace.trim() && pWorkspaceCheck && !pWorkspaceCheck.valid
+                      ? "field-bad"
+                      : ""
+                }`}
+                value={pWorkspace}
+                placeholder="Choose a folder or paste absolute path"
+                onChange={(e) => setPWorkspace(e.target.value)}
+              />
+              <button type="button" className="btn-ghost shrink-0" onClick={() => void pickWorkspaceFolder()}>
+                <FolderOpen className="h-4 w-4" /> Browse
+              </button>
+            </div>
+            {pWorkspace.trim() && pWorkspaceCheck && (
+              <p className={`tiny mt-1 ${pWorkspaceCheck.valid ? "path-ok" : "path-bad"}`}>
+                {pWorkspaceCheck.valid ? "✓ " : "✗ "}
+                {pWorkspaceCheck.detail}
+                {pWorkspaceCheck.normalized
+                  ? ` · ${pWorkspaceCheck.normalized}`
+                  : ""}
+              </p>
+            )}
+          </div>
           <div>
             <label className="label">Currency</label>
             <select
@@ -316,7 +520,7 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
               ))}
             </select>
           </div>
-          <Field label={`Contracted budget (${pCurrency})`} value={pBudget} onChange={setPBudget} />
+          <Field label={`Total payment (${pCurrency})`} value={pBudget} onChange={setPBudget} />
         </Modal>
       )}
     </section>
@@ -338,6 +542,7 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [assigningId, setAssigningId] = useState<string | null>(null);
 
   async function load(nextPage = page) {
     if (!selectedProjectId) {
@@ -375,9 +580,27 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
+  async function assignToProject(itemId: string) {
+    if (!selectedProjectId) return;
+    setAssigningId(itemId);
+    try {
+      // Prefer an existing non-General task when present; otherwise backend creates General.
+      const preferred =
+        tasks.find((t) => t.title !== "General")?.id ?? tasks[0]?.id ?? null;
+      await api.assignUnassigned(itemId, selectedProjectId, preferred);
+      setToast("Assigned to current project (workspace mapped)");
+      await onRefresh();
+      await load(page);
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : "Assign failed");
+    } finally {
+      setAssigningId(null);
+    }
+  }
+
   return (
     <div className="mt-4 space-y-3">
-      <div className="flex flex-wrap items-end gap-2">
+      <FilterBar>
         <div className="min-w-[160px] flex-1">
           <label className="label">Search</label>
           <input
@@ -438,11 +661,11 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
         >
           Dismiss empty noise
         </button>
-      </div>
+      </FilterBar>
 
       <p className="tiny">
         {!selectedProjectId
-          ? "Select a project to review its unassigned activity."
+          ? "Select a project to review attribution for that project."
           : loading
             ? "Loading…"
             : `${total} pending for this project`}{" "}
@@ -464,45 +687,29 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
                 {item.workspace_path || "—"} · {item.conversation_id || "no conversation"}
               </div>
               <p className="tiny mt-1">
-                Add this path as a project workspace, or assign to an existing project task.
+                Assign maps this workspace to the selected project and links the conversation.
               </p>
             </div>
             <button
               type="button"
-              className="btn-ghost"
-              disabled={!selectedProjectId || tasks.length === 0}
-              onClick={async () => {
-                if (!selectedProjectId || !tasks[0]) return;
-                await api.assignUnassigned(item.id, selectedProjectId, tasks[0].id);
-                setToast("Assigned to first task in project");
-                await onRefresh();
-                await load(page);
-              }}
+              className="btn"
+              disabled={!selectedProjectId || assigningId === item.id}
+              onClick={() => void assignToProject(item.id)}
             >
-              Assign to current project task
+              {assigningId === item.id ? "Assigning…" : "Assign to current project"}
             </button>
           </div>
         ))
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className="btn-ghost"
-          disabled={page <= 1 || loading}
-          onClick={() => void load(page - 1)}
-        >
-          Previous
-        </button>
-        <button
-          type="button"
-          className="btn-ghost"
-          disabled={page >= totalPages || loading}
-          onClick={() => void load(page + 1)}
-        >
-          Next
-        </button>
-      </div>
+      <PaginationBar
+        page={page}
+        totalPages={totalPages}
+        total={total}
+        pageSize={pageSize}
+        loading={loading}
+        onPage={(p) => void load(p)}
+      />
     </div>
   );
 }

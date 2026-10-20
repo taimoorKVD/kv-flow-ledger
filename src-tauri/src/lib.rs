@@ -23,6 +23,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app
                 .path()
@@ -75,6 +76,7 @@ pub fn run() {
             commands::list_unassigned_page,
             commands::dismiss_noise_unassigned,
             commands::assign_unassigned,
+            commands::validate_workspace_path,
             commands::add_usage_record,
             commands::import_usage_csv,
             commands::list_usage,

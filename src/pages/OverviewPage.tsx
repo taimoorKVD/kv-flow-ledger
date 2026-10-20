@@ -1,8 +1,11 @@
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Clock, Cpu, Receipt, TrendingUp, RadioTower } from "lucide-react";
 import { useAppStore } from "@/stores/appStore";
 import { compactTokens, dur, margin, money } from "@/lib/format";
+import { FilterBar, PaginationBar, useClientPage } from "@/components/ListControls";
 import { api } from "@/lib/api";
+
+const TASK_PAGE_SIZE = 8;
 
 export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<void> }) {
   const dashboard = useAppStore((s) => s.dashboard);
@@ -10,6 +13,16 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
   const setPage = useAppStore((s) => s.setPage);
   const setToast = useAppStore((s) => s.setToast);
   const selectedProjectId = useAppStore((s) => s.selectedProjectId);
+  const [taskSearch, setTaskSearch] = useState("");
+  const [taskPage, setTaskPage] = useState(1);
+
+  const filteredTasks = useMemo(() => {
+    if (!taskSearch.trim()) return tasks;
+    const q = taskSearch.trim().toLowerCase();
+    return tasks.filter((t) => t.title.toLowerCase().includes(q) || t.status.toLowerCase().includes(q));
+  }, [tasks, taskSearch]);
+  const { slice: pagedTasks, total: taskTotal, totalPages: taskPages, page: safeTaskPage } =
+    useClientPage(filteredTasks, taskPage, TASK_PAGE_SIZE);
 
   if (!dashboard) {
     return (
@@ -180,6 +193,20 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
               View all →
             </button>
           </div>
+          <FilterBar>
+            <div className="min-w-[140px] flex-1">
+              <label className="label">Filter</label>
+              <input
+                className="field mt-1"
+                value={taskSearch}
+                placeholder="Task or status"
+                onChange={(e) => {
+                  setTaskSearch(e.target.value);
+                  setTaskPage(1);
+                }}
+              />
+            </div>
+          </FilterBar>
           <div className="overflow-x-auto">
             <table className="table">
               <thead>
@@ -190,12 +217,12 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
                 </tr>
               </thead>
               <tbody>
-                {tasks.length === 0 && (
+                {pagedTasks.length === 0 && (
                   <tr>
                     <td colSpan={3}>No tasks yet</td>
                   </tr>
                 )}
-                {tasks.map((t) => (
+                {pagedTasks.map((t) => (
                   <tr key={t.id}>
                     <td>
                       <div className="font-semibold">{t.title}</div>
@@ -209,6 +236,13 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
               </tbody>
             </table>
           </div>
+          <PaginationBar
+            page={safeTaskPage}
+            totalPages={taskPages}
+            total={taskTotal}
+            pageSize={TASK_PAGE_SIZE}
+            onPage={setTaskPage}
+          />
         </div>
         <div className="panel p-5">
           <div className="mb-4 flex items-center justify-between">
@@ -219,7 +253,12 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
           </div>
           <div className="space-y-3 text-sm">
             <Row k="Ingest" v={tracking.ingest_listening ? `127.0.0.1:${tracking.ingest_port}` : "Offline"} />
-            <Row k="Hooks" v={tracking.hooks_installed ? "Installed" : "Not installed"} />
+            <div className="flex justify-between gap-3 border-b border-[#253247] pb-2">
+              <span className="text-muted">Hooks</span>
+              <span className={`status-badge ${tracking.hooks_installed ? "ok" : "warn"}`}>
+                {tracking.hooks_installed ? "Installed" : "Not installed"}
+              </span>
+            </div>
             <Row k="Active projects" v={String(dashboard.active_projects)} />
             <Row k="Active tasks" v={String(dashboard.active_tasks)} />
             <Row k="Last event" v={tracking.last_event_at ?? "—"} />

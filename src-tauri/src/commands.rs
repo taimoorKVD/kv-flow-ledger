@@ -131,9 +131,46 @@ pub fn assign_unassigned(
     state: State<'_, AppState>,
     unassigned_id: String,
     project_id: String,
-    task_id: String,
+    task_id: Option<String>,
 ) -> AppResult<()> {
-    attribution::assign_unassigned(&state.db, &unassigned_id, &project_id, &task_id)
+    attribution::assign_unassigned(
+        &state.db,
+        &unassigned_id,
+        &project_id,
+        task_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn validate_workspace_path(path: String) -> serde_json::Value {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return serde_json::json!({
+            "valid": false,
+            "exists": false,
+            "is_dir": false,
+            "normalized": "",
+            "detail": "Enter or choose a folder path",
+        });
+    }
+    let normalized = crate::services::projects::normalize_path(trimmed);
+    let p = std::path::Path::new(&normalized);
+    let exists = p.exists();
+    let is_dir = p.is_dir();
+    let valid = exists && is_dir;
+    serde_json::json!({
+        "valid": valid,
+        "exists": exists,
+        "is_dir": is_dir,
+        "normalized": normalized,
+        "detail": if valid {
+            "Workspace folder verified"
+        } else if !exists {
+            "Path not found on this machine"
+        } else {
+            "Path exists but is not a folder"
+        },
+    })
 }
 
 #[tauri::command]

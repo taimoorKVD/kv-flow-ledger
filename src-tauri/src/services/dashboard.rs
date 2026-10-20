@@ -30,9 +30,7 @@ pub fn summary(db: &Db, project_id: Option<&str>, ingest_listening: bool) -> App
     };
 
     let work = project_work_ms(db, pid.as_deref())?;
-    // Labor is valued in settings (salary) currency, then converted into the project currency.
-    let labor_native = rate.labor_cost_for_ms(work.combined_ms).unwrap_or(0);
-    let labor = crate::services::currency::try_convert(db, labor_native, &rate.currency, &currency)?.0;
+    let labor = project_labor_cost(db, pid.as_deref(), &currency, work.combined_ms, &rate)?;
     let (ai_tokens, ai_tokens_available, ai_minor) =
         usage_totals(db, pid.as_deref(), &currency)?;
     let other = other_expenses(db, pid.as_deref())?;
@@ -343,9 +341,7 @@ pub fn project_financials_dto(
         .ok_or_else(|| crate::error::AppError::Message("project not found".into()))?;
     let rate: LaborRate = settings::labor_rate(db)?;
     let work = project_work_ms(db, Some(project_id))?;
-    let labor_native = rate.labor_cost_for_ms(work.combined_ms).unwrap_or(0);
-    let labor =
-        crate::services::currency::try_convert(db, labor_native, &rate.currency, &p.currency)?.0;
+    let labor = project_labor_cost(db, Some(project_id), &p.currency, work.combined_ms, &rate)?;
     let (_, _, ai) = usage_totals(db, Some(project_id), &p.currency)?;
     let other = other_expenses(db, Some(project_id))?;
     let sub = subscription_allocation(db, Some(project_id))?;
@@ -362,4 +358,30 @@ pub fn project_financials_dto(
         sub,
         work.combined_ms,
     ))
+}
+
+/// Prefer project hourly labor override (already in project currency); else global salary rate.
+fn project_labor_cost(
+    db: &Db,
+    project_id: Option<&str>,
+    project_currency: &str,
+    work_ms: i64,
+    global_rate: &LaborRate,
+) -> AppResult<i64> {
+    if let Some(pid) = project_id {
+        if let Some(p) = projects::get_project(db, pid)? {
+            if let Some(hourly) = p.labor_rate_override_minor.filter(|v| *v > 0) {
+                let hours = (work_ms as f64) / 3_600_000.0;
+                return Ok((hours * hourly as f64).round() as i64);
+            }
+        }
+    }
+    let labor_native = global_rate.labor_cost_for_ms(work_ms).unwrap_or(0);
+    Ok(crate::services::currency::try_convert(
+        db,
+        labor_native,
+        &global_rate.currency,
+        project_currency,
+    )?
+    .0)
 }

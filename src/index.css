@@ -205,6 +205,134 @@ body {
   border-color: var(--accent);
 }
 
+.field-ok {
+  border-color: #3ecf9a !important;
+  box-shadow: 0 0 0 1px #3ecf9a44;
+}
+
+.field-bad {
+  border-color: #ff8996 !important;
+  box-shadow: 0 0 0 1px #ff899644;
+}
+
+.path-ok {
+  color: #61ddb3;
+  font-weight: 600;
+}
+
+.path-bad {
+  color: #ff8996;
+  font-weight: 600;
+}
+
+.status-badge {
+  font-size: 11px;
+  font-weight: 750;
+  border-radius: 999px;
+  padding: 6px 11px;
+  border: 1px solid transparent;
+}
+
+.status-badge.ok {
+  background: #143029;
+  border-color: #2bb888;
+  color: #61ddb3;
+}
+
+.status-badge.warn {
+  background: #3a2e14;
+  border-color: #f0bc6d;
+  color: #f0bc6d;
+}
+
+.light .status-badge.ok {
+  background: #d8f5ea;
+  border-color: #0f9f6e;
+  color: #0a5c40;
+}
+
+.light .status-badge.warn {
+  background: #fff4df;
+  border-color: #d4a017;
+  color: #8a6508;
+}
+
+.status-ok-panel {
+  border-color: #2bb88855 !important;
+}
+
+.status-warn-panel {
+  border-color: #f0bc6d44 !important;
+}
+
+.status-ok-soft {
+  border-color: #2bb88866 !important;
+}
+
+.field-ok {
+  border-color: #3ecf9a !important;
+  box-shadow: 0 0 0 1px #3ecf9a44;
+}
+
+.field-bad {
+  border-color: #ff8996 !important;
+  box-shadow: 0 0 0 1px #ff899644;
+}
+
+.path-ok {
+  color: #61ddb3;
+  font-weight: 600;
+}
+
+.path-bad {
+  color: #ff8996;
+  font-weight: 600;
+}
+
+.status-badge {
+  font-size: 11px;
+  font-weight: 750;
+  border-radius: 999px;
+  padding: 6px 11px;
+  border: 1px solid transparent;
+}
+
+.status-badge.ok {
+  background: #143029;
+  border-color: #2bb888;
+  color: #61ddb3;
+}
+
+.status-badge.warn {
+  background: #3a2e14;
+  border-color: #f0bc6d;
+  color: #f0bc6d;
+}
+
+.light .status-badge.ok {
+  background: #d8f5ea;
+  border-color: #0f9f6e;
+  color: #0a5c40;
+}
+
+.light .status-badge.warn {
+  background: #fff4df;
+  border-color: #d4a017;
+  color: #8a6508;
+}
+
+.status-ok-panel {
+  border-color: #2bb88855 !important;
+}
+
+.status-warn-panel {
+  border-color: #f0bc6d44 !important;
+}
+
+.status-ok-soft {
+  border-color: #2bb88866 !important;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;

@@ -1,8 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 import { api, type UsageRecord } from "@/lib/api";
 import { compactTokens, money } from "@/lib/format";
+import { FilterBar, PaginationBar, useClientPage } from "@/components/ListControls";
 import { useAppStore } from "@/stores/appStore";
+
+const PAGE_SIZE = 15;
 
 export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void> }) {
   const selectedProjectId = useAppStore((s) => s.selectedProjectId);
@@ -21,10 +24,49 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
   const [cost, setCost] = useState("");
   const [source, setSource] = useState("Manual entry");
   const [csvText, setCsvText] = useState("");
+  const [search, setSearch] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [evidenceFilter, setEvidenceFilter] = useState("all");
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     void api.listUsage(selectedProjectId ?? undefined).then(setRows).catch(() => setRows([]));
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, sourceFilter, evidenceFilter, selectedProjectId]);
+
+  const sources = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.billing_source))).sort(),
+    [rows]
+  );
+  const evidences = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.verification_status))).sort(),
+    [rows]
+  );
+
+  const filtered = useMemo(() => {
+    return rows.filter((u) => {
+      if (sourceFilter !== "all" && u.billing_source !== sourceFilter) return false;
+      if (evidenceFilter !== "all" && u.verification_status !== evidenceFilter) return false;
+      if (search.trim()) {
+        const q = search.trim().toLowerCase();
+        const hay = [u.model, u.billing_source, u.verification_status, u.notes, u.occurred_at]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [rows, sourceFilter, evidenceFilter, search]);
+
+  const { slice, total, totalPages, page: safePage } = useClientPage(
+    filtered,
+    page,
+    PAGE_SIZE
+  );
 
   async function addManual() {
     const tokenNum = tokens.trim() === "" ? null : Number(tokens);
@@ -78,7 +120,7 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
         </div>
         <div className="panel p-5">
           <span className="label">AI allocation</span>
-          <div className="kpi mt-2">{money(dashboard?.ai_minor ?? 0)}</div>
+          <div className="kpi mt-2">{money(dashboard?.ai_minor ?? 0, projectCcy)}</div>
           <p className="tiny mt-2">Avoid double-counting subscription fees</p>
         </div>
         <div className="panel p-5">
@@ -92,13 +134,54 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
           <div>
             <h2 className="text-lg font-bold">Usage ledger</h2>
-            <p className="tiny mt-1">Every record has source, cost basis and task assignment.</p>
+            <p className="tiny mt-1">Project-scoped records with source, cost basis and task assignment.</p>
           </div>
           <button type="button" className="btn" onClick={() => setOpen(true)}>
             <Plus className="h-4 w-4" /> Import / add usage
           </button>
         </div>
-        <div className="mt-4 overflow-x-auto">
+        <FilterBar>
+          <div className="min-w-[160px] flex-1">
+            <label className="label">Search</label>
+            <input
+              className="field mt-1"
+              value={search}
+              placeholder="Model, source, notes…"
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label">Source</label>
+            <select
+              className="field mt-1"
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value)}
+            >
+              <option value="all">All sources</option>
+              {sources.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Evidence</label>
+            <select
+              className="field mt-1"
+              value={evidenceFilter}
+              onChange={(e) => setEvidenceFilter(e.target.value)}
+            >
+              <option value="all">All evidence</option>
+              {evidences.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+        </FilterBar>
+        <div className="overflow-x-auto">
           <table className="table">
             <thead>
               <tr>
@@ -110,12 +193,12 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && (
+              {slice.length === 0 && (
                 <tr>
-                  <td colSpan={5}>No usage records</td>
+                  <td colSpan={5}>No usage records match the current filters</td>
                 </tr>
               )}
-              {rows.map((u) => (
+              {slice.map((u) => (
                 <tr key={u.id}>
                   <td>{u.occurred_at}</td>
                   <td>
@@ -126,7 +209,7 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
                   <td>
                     {u.reported_cost_minor == null
                       ? "Unavailable"
-                      : money(u.reported_cost_minor)}
+                      : money(u.reported_cost_minor, projectCcy)}
                   </td>
                   <td>{u.billing_source}</td>
                   <td>
@@ -137,6 +220,13 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
             </tbody>
           </table>
         </div>
+        <PaginationBar
+          page={safePage}
+          totalPages={totalPages}
+          total={total}
+          pageSize={PAGE_SIZE}
+          onPage={setPage}
+        />
       </div>
 
       <div className="panel p-5">

@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { money } from "@/lib/format";
+import { FilterBar, PaginationBar, useClientPage } from "@/components/ListControls";
 import { useAppStore } from "@/stores/appStore";
+
+const RATE_PAGE_SIZE = 8;
 
 export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<void> }) {
   const setToast = useAppStore((s) => s.setToast);
@@ -29,6 +32,8 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
   const [rateBase, setRateBase] = useState("USD");
   const [rateQuote, setRateQuote] = useState("PKR");
   const [rateValue, setRateValue] = useState("278.50");
+  const [rateSearch, setRateSearch] = useState("");
+  const [ratePage, setRatePage] = useState(1);
 
   useEffect(() => {
     void (async () => {
@@ -48,6 +53,22 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
 
   const perMinute =
     Number(hours) > 0 ? Math.round((Number(salary) * 100) / Number(hours) / 60) : 0;
+
+  const filteredRates = rates.filter((r) => {
+    if (!rateSearch.trim()) return true;
+    const q = rateSearch.trim().toLowerCase();
+    return `${r.base_currency} ${r.quote_currency} ${r.rate_numeric}`
+      .toLowerCase()
+      .includes(q);
+  });
+  const { slice: pagedRates, total: rateTotal, totalPages: ratePages, page: safeRatePage } =
+    useClientPage(filteredRates, ratePage, RATE_PAGE_SIZE);
+
+  useEffect(() => {
+    setRatePage(1);
+  }, [rateSearch]);
+
+  const hooksInstalled = Boolean(hooks?.installed);
 
   async function saveRules() {
     await api.saveSettings({
@@ -142,8 +163,10 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
         </div>
 
         <div className="panel p-5">
-          <h2 className="text-lg font-bold">Labor valuation</h2>
-          <p className="tiny mt-1">Task-time valuation; not a claim about keyboard time.</p>
+          <h2 className="text-lg font-bold">Labor valuation (global default)</h2>
+          <p className="tiny mt-1">
+            Used when a project has no labor rate override. Per-project rates live on Projects.
+          </p>
           <div className="mt-5 space-y-4">
             <div>
               <label className="label">Salary currency</label>
@@ -189,7 +212,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
             </button>
             <p className="tiny">
               When a project uses another currency (e.g. PKR), labor cost is converted using
-              exchange rates below.
+              exchange rates below unless that project sets its own hourly override.
             </p>
           </div>
         </div>
@@ -231,7 +254,18 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
             </button>
           </div>
         </div>
-        <div className="mt-4 overflow-x-auto">
+        <FilterBar>
+          <div className="min-w-[160px] flex-1">
+            <label className="label">Filter rates</label>
+            <input
+              className="field mt-1"
+              value={rateSearch}
+              placeholder="USD, PKR…"
+              onChange={(e) => setRateSearch(e.target.value)}
+            />
+          </div>
+        </FilterBar>
+        <div className="overflow-x-auto">
           <table className="table">
             <thead>
               <tr>
@@ -241,12 +275,12 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
               </tr>
             </thead>
             <tbody>
-              {rates.length === 0 && (
+              {pagedRates.length === 0 && (
                 <tr>
                   <td colSpan={3}>No rates yet</td>
                 </tr>
               )}
-              {rates.map((r) => (
+              {pagedRates.map((r) => (
                 <tr key={r.id}>
                   <td>
                     {r.base_currency} → {r.quote_currency}
@@ -258,17 +292,34 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
             </tbody>
           </table>
         </div>
+        <PaginationBar
+          page={safeRatePage}
+          totalPages={ratePages}
+          total={rateTotal}
+          pageSize={RATE_PAGE_SIZE}
+          onPage={setRatePage}
+        />
       </div>
 
-      <div className="panel p-5">
-        <h2 className="text-lg font-bold">Cursor hook installation</h2>
-        <p className="mt-2 text-sm text-muted">
-          Explicit, reversible install into <code>~/.cursor/hooks.json</code> with backup. Does not
-          modify project repositories unless you add project hooks yourself.
-        </p>
-        <div className="mt-4 soft p-4 text-sm">
-          <div>Status: {hooks?.installed ? "Installed" : "Not installed"}</div>
-          <div className="tiny mt-1">{String(hooks?.hooks_path ?? "")}</div>
+      <div className={`panel p-5 ${hooksInstalled ? "status-ok-panel" : "status-warn-panel"}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold">Cursor hook installation</h2>
+            <p className="mt-2 text-sm text-muted">
+              Explicit, reversible install into <code>~/.cursor/hooks.json</code> with backup. Does not
+              modify project repositories unless you add project hooks yourself.
+            </p>
+          </div>
+          <span className={`status-badge ${hooksInstalled ? "ok" : "warn"}`}>
+            {hooksInstalled ? "Installed" : "Not installed"}
+          </span>
+        </div>
+        <div className={`mt-4 soft p-4 text-sm ${hooksInstalled ? "status-ok-soft" : ""}`}>
+          <div className="flex items-center gap-2 font-semibold">
+            <span className={`dot ${hooksInstalled ? "" : "off"}`} />
+            Status: {hooksInstalled ? "Hooks verified in hooks.json" : "Hooks not present"}
+          </div>
+          <div className="tiny mt-2">{String(hooks?.hooks_path ?? "")}</div>
           <div className="tiny mt-1">{String(hooks?.detail ?? "")}</div>
           <div className="tiny mt-1">
             Data file: {String(appInfo?.db_path ?? "—")} · Ingest listening:{" "}
@@ -277,9 +328,14 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           <button type="button" className="btn" onClick={() => void installHooks()}>
-            Install hooks
+            {hooksInstalled ? "Reinstall hooks" : "Install hooks"}
           </button>
-          <button type="button" className="btn-ghost" onClick={() => void uninstallHooks()}>
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={!hooksInstalled}
+            onClick={() => void uninstallHooks()}
+          >
             Uninstall hooks
           </button>
         </div>

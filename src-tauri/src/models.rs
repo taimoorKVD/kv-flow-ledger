@@ -178,10 +178,17 @@ pub struct UnassignedPage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFinanceUpdate {
+    /// Total contracted / agreed payment for the project.
     pub contracted_budget_minor: i64,
     pub recognized_revenue_minor: i64,
+    /// Cash actually received.
     pub payments_received_minor: i64,
+    /// Optional other cash expenses (0 = none).
     pub other_expenses_minor: i64,
+    /// Optional project hourly labor rate in project-currency minor units.
+    /// When set, overrides the global Settings salary rate for this project.
+    #[serde(default)]
+    pub labor_rate_override_minor: Option<i64>,
     /// ISO currency code (USD, PKR, …). All project amounts are treated in this currency.
     pub currency: String,
 }

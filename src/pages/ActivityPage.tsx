@@ -1,13 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api, type ActivityEvent } from "@/lib/api";
 import { dur } from "@/lib/format";
+import { FilterBar, PaginationBar, useClientPage } from "@/components/ListControls";
 import { useAppStore } from "@/stores/appStore";
+
+const PAGE_SIZE = 15;
 
 export default function ActivityPage() {
   const selectedProjectId = useAppStore((s) => s.selectedProjectId);
   const dashboard = useAppStore((s) => s.dashboard);
   const tasks = useAppStore((s) => s.tasks);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [search, setSearch] = useState("");
+  const [eventType, setEventType] = useState("all");
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     void api
@@ -15,6 +21,36 @@ export default function ActivityPage() {
       .then(setEvents)
       .catch(() => setEvents([]));
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, eventType, selectedProjectId]);
+
+  const types = useMemo(
+    () => Array.from(new Set(events.map((e) => e.event_type))).sort(),
+    [events]
+  );
+
+  const filtered = useMemo(() => {
+    return events.filter((e) => {
+      if (eventType !== "all" && e.event_type !== eventType) return false;
+      if (search.trim()) {
+        const q = search.trim().toLowerCase();
+        const hay = [e.event_type, e.conversation_id, e.workspace_path, e.model]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [events, eventType, search]);
+
+  const { slice, total, totalPages, page: safePage } = useClientPage(
+    filtered,
+    page,
+    PAGE_SIZE
+  );
 
   const agentMs = tasks.reduce((a, t) => a + t.agent_ms, 0);
   const workMs = dashboard?.task_work_ms ?? 0;
@@ -26,13 +62,41 @@ export default function ActivityPage() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-lg font-bold">Task activity timeline</h2>
-              <p className="tiny mt-1">Event-level records · chronological order</p>
+              <p className="tiny mt-1">
+                Project-scoped event records · chronological order
+              </p>
             </div>
             <span className="pill">Local events</span>
           </div>
-          <div className="mt-6 space-y-5">
-            {events.length === 0 && <p className="tiny">No events recorded yet.</p>}
-            {events.map((e) => (
+          <FilterBar>
+            <div className="min-w-[160px] flex-1">
+              <label className="label">Search</label>
+              <input
+                className="field mt-1"
+                value={search}
+                placeholder="Event, workspace, conversation…"
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="label">Event type</label>
+              <select
+                className="field mt-1"
+                value={eventType}
+                onChange={(e) => setEventType(e.target.value)}
+              >
+                <option value="all">All types</option>
+                {types.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </FilterBar>
+          <div className="mt-2 space-y-5">
+            {slice.length === 0 && <p className="tiny">No events match the current filters.</p>}
+            {slice.map((e) => (
               <div key={e.id} className="logrow">
                 <div className="flex justify-between gap-3">
                   <strong className="text-sm">{e.event_type}</strong>
@@ -45,6 +109,13 @@ export default function ActivityPage() {
               </div>
             ))}
           </div>
+          <PaginationBar
+            page={safePage}
+            totalPages={totalPages}
+            total={total}
+            pageSize={PAGE_SIZE}
+            onPage={setPage}
+          />
         </div>
         <div className="panel h-fit p-5">
           <h2 className="text-lg font-bold">Time accounting</h2>

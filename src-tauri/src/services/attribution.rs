@@ -150,7 +150,9 @@ pub fn list_unassigned_page(
         let mut params_vec: Vec<mysql::Value> = Vec::new();
 
         if let Some(pid) = &project_id {
-            // Workspace mapped to this project, or conversation already linked to it.
+            // Project-scoped review queue:
+            // 1) unknown / unmapped workspaces (candidates to assign TO this project)
+            // 2) rows already linked by conversation or mapped workspace for this project
             let ws_paths: Vec<String> = conn.exec_map(
                 "SELECT path FROM project_workspaces WHERE project_id = ?",
                 (pid,),
@@ -165,7 +167,10 @@ pub fn list_unassigned_page(
 
             where_sql.push_str(" AND (");
             where_sql.push_str(
-                "EXISTS (
+                "reason IN ('unknown_workspace', 'ambiguous_workspace', 'needs_review')",
+            );
+            where_sql.push_str(
+                " OR EXISTS (
                    SELECT 1 FROM cursor_conversations cc
                    WHERE cc.project_id = ?
                      AND cc.conversation_id = unassigned_activity.conversation_id
@@ -312,15 +317,29 @@ pub fn assign_unassigned(
     db: &Db,
     unassigned_id: &str,
     project_id: &str,
-    task_id: &str,
+    task_id: Option<&str>,
 ) -> AppResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
-    db.with_conn(|conn| {
-        let row: Option<(Option<String>, Option<String>)> = conn.exec_first(
+    let row: Option<(Option<String>, Option<String>)> = db.with_conn(|conn| {
+        Ok(conn.exec_first(
             "SELECT workspace_path, conversation_id FROM unassigned_activity WHERE id = ?",
             (unassigned_id,),
-        )?;
-        let (workspace, conversation) = row.unwrap_or((None, None));
+        )?)
+    })?;
+    let (workspace, conversation) = row.unwrap_or((None, None));
+
+    // Map workspace folder onto the project so future Cursor events auto-attribute.
+    if let Some(ws) = workspace.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        projects::add_workspace_to_project(db, project_id, ws)?;
+    }
+
+    let resolved_task_id = if let Some(tid) = task_id.map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        tid.to_string()
+    } else {
+        projects::ensure_general_task(db, project_id)?
+    };
+
+    db.with_conn(|conn| {
         if let Some(cid) = conversation.as_ref() {
             conn.exec_drop(
                 "INSERT INTO cursor_conversations (id, conversation_id, project_id, task_id, workspace_path, first_seen_at, last_seen_at)
@@ -334,11 +353,28 @@ pub fn assign_unassigned(
                     Uuid::new_v4().to_string(),
                     cid,
                     project_id,
-                    task_id,
+                    &resolved_task_id,
                     &workspace,
                     &now,
                     &now,
                 ),
+            )?;
+        }
+        // Rebind historical events / intervals for this conversation when present.
+        if let Some(cid) = conversation.as_ref() {
+            conn.exec_drop(
+                "UPDATE cursor_events SET project_id = ?, task_id = ? WHERE conversation_id = ?",
+                (project_id, &resolved_task_id, cid),
+            )?;
+            conn.exec_drop(
+                "UPDATE activity_intervals SET project_id = ?, task_id = ? WHERE conversation_id = ?",
+                (project_id, &resolved_task_id, cid),
+            )?;
+        } else if let Some(ws) = workspace.as_ref() {
+            conn.exec_drop(
+                "UPDATE cursor_events SET project_id = ?, task_id = ?
+                 WHERE project_id IS NULL AND LOWER(IFNULL(workspace_path,'')) = LOWER(?)",
+                (project_id, &resolved_task_id, ws),
             )?;
         }
         conn.exec_drop(
@@ -348,14 +384,14 @@ pub fn assign_unassigned(
                 Uuid::new_v4().to_string(),
                 unassigned_id,
                 project_id,
-                task_id,
+                &resolved_task_id,
                 &now,
             ),
         )?;
         conn.exec_drop(
             "UPDATE unassigned_activity SET status = 'resolved', resolved_at = ?,
              resolved_project_id = ?, resolved_task_id = ? WHERE id = ?",
-            (&now, project_id, task_id, unassigned_id),
+            (&now, project_id, &resolved_task_id, unassigned_id),
         )?;
         Ok(())
     })
