@@ -7,6 +7,10 @@ use std::sync::Arc;
 use std::thread;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
+fn header_is(name: &str, expected: &str) -> bool {
+    name.eq_ignore_ascii_case(expected)
+}
+
 pub fn start_ingest_server(db: Arc<Db>, port: u16, token: String) -> std::thread::JoinHandle<()> {
     thread::spawn(move || {
         let addr = format!("127.0.0.1:{port}");
@@ -30,13 +34,11 @@ pub fn start_ingest_server(db: Arc<Db>, port: u16, token: String) -> std::thread
             }
             if method == Method::Post && url.starts_with("/hooks/ingest") {
                 if !token.is_empty() {
-                    let auth_ok = request
-                        .headers()
-                        .iter()
-                        .any(|h| {
-                            h.field.as_str().eq_ignore_ascii_case("authorization")
-                                && h.value.as_str() == format!("Bearer {token}")
-                        });
+                    let expected = format!("Bearer {token}");
+                    let auth_ok = request.headers().iter().any(|h| {
+                        header_is(h.field.as_str().as_str(), "authorization")
+                            && h.value.as_str() == expected
+                    });
                     if !auth_ok {
                         let _ = request.respond(
                             Response::from_string(json!({"error":"unauthorized"}).to_string())
