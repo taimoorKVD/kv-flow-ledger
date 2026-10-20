@@ -1,5 +1,6 @@
 pub mod attribution;
 pub mod currency;
+pub mod cursor_api;
 pub mod dashboard;
 pub mod hooks;
 pub mod ingest;

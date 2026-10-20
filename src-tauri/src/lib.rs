@@ -79,6 +79,8 @@ pub fn run() {
             commands::validate_workspace_path,
             commands::add_usage_record,
             commands::import_usage_csv,
+            commands::sync_cursor_usage,
+            commands::test_cursor_api_key,
             commands::list_usage,
             commands::install_cursor_hooks,
             commands::uninstall_cursor_hooks,

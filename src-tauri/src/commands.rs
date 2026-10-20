@@ -2,7 +2,7 @@ use crate::error::AppResult;
 use crate::finance::ProjectFinancials;
 use crate::models::*;
 use crate::services::{
-    attribution, currency, dashboard, hooks, ingest, projects, settings, usage,
+    attribution, currency, cursor_api, dashboard, hooks, ingest, projects, settings, usage,
 };
 use crate::state::AppState;
 use std::collections::HashMap;
@@ -188,6 +188,24 @@ pub fn import_usage_csv(
     csv_text: String,
 ) -> AppResult<usage::ImportResult> {
     usage::import_csv(&state.db, &filename, &csv_text)
+}
+
+#[tauri::command]
+pub fn sync_cursor_usage(
+    state: State<'_, AppState>,
+    days: Option<i64>,
+    project_id: Option<String>,
+) -> AppResult<cursor_api::SyncResult> {
+    cursor_api::sync_usage(
+        &state.db,
+        days.unwrap_or(30),
+        project_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn test_cursor_api_key(state: State<'_, AppState>) -> AppResult<String> {
+    cursor_api::test_api_key(&state.db)
 }
 
 #[tauri::command]

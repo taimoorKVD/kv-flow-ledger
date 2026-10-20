@@ -146,8 +146,12 @@ fn usage_totals(
         if let Some(pid) = project_id {
             Ok(conn.exec(
                 "SELECT total_tokens, reported_cost_minor, currency FROM ai_usage_records
-                 WHERE project_id = ? OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)",
-                (pid, pid),
+                 WHERE project_id = ?
+                    OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)
+                    OR (conversation_id IS NOT NULL AND conversation_id IN (
+                          SELECT conversation_id FROM cursor_conversations WHERE project_id = ?
+                        ))",
+                (pid, pid, pid),
             )?)
         } else {
             Ok(conn.query(

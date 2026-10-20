@@ -28,6 +28,8 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
   const [sourceFilter, setSourceFilter] = useState("all");
   const [evidenceFilter, setEvidenceFilter] = useState("all");
   const [page, setPage] = useState(1);
+  const [syncing, setSyncing] = useState(false);
+  const [syncDays, setSyncDays] = useState("30");
 
   useEffect(() => {
     void api.listUsage(selectedProjectId ?? undefined).then(setRows).catch(() => setRows([]));
@@ -96,6 +98,23 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
     await onRefresh();
   }
 
+  async function syncFromCursor() {
+    setSyncing(true);
+    try {
+      const days = Math.max(1, Math.min(90, Number(syncDays) || 30));
+      const res = await api.syncCursorUsage(days, selectedProjectId);
+      setToast(
+        `${res.detail} · ${res.attributed} attributed to projects`
+      );
+      setRows(await api.listUsage(selectedProjectId ?? undefined));
+      await onRefresh();
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function importCsv() {
     if (!csvText.trim()) return setToast("Paste CSV first");
     const res = await api.importUsageCsv("paste.csv", csvText);
@@ -116,17 +135,54 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
           <div className="kpi mt-2">
             {compactTokens(dashboard?.ai_tokens, Boolean(dashboard?.ai_tokens_available))}
           </div>
-          <p className="tiny mt-2">Missing data shown as Unavailable — never fabricated</p>
+          <p className="tiny mt-2">From Cursor API sync / verified imports — never fabricated</p>
         </div>
         <div className="panel p-5">
           <span className="label">AI allocation</span>
           <div className="kpi mt-2">{money(dashboard?.ai_minor ?? 0, projectCcy)}</div>
-          <p className="tiny mt-2">Avoid double-counting subscription fees</p>
+          <p className="tiny mt-2">Sum of Cursor <code>chargedCents</code> for this project</p>
         </div>
         <div className="panel p-5">
           <span className="label">Data coverage</span>
-          <div className="mt-3 text-xl font-bold amber">Source-labeled</div>
-          <p className="tiny mt-2">Do not interpret estimates as verified Cursor billing</p>
+          <div className="mt-3 text-xl font-bold amber">Cursor API</div>
+          <p className="tiny mt-2">Sync from Settings API key; hooks link chats to projects</p>
+        </div>
+      </div>
+
+      <div className="panel p-5">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold">Sync from Cursor</h2>
+            <p className="tiny mt-1">
+              Pulls billed usage events via Admin API. Conversation ids from hooks map costs onto
+              the selected project; unmatched events are assigned to the current project when one
+              is selected.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <label className="label">Days</label>
+              <select
+                className="field mt-1"
+                value={syncDays}
+                onChange={(e) => setSyncDays(e.target.value)}
+              >
+                {[7, 14, 30, 60, 90].map((d) => (
+                  <option key={d} value={d}>
+                    Last {d} days
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              type="button"
+              className="btn"
+              disabled={syncing}
+              onClick={() => void syncFromCursor()}
+            >
+              {syncing ? "Syncing…" : "Sync Cursor usage"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -136,8 +192,8 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
             <h2 className="text-lg font-bold">Usage ledger</h2>
             <p className="tiny mt-1">Project-scoped records with source, cost basis and task assignment.</p>
           </div>
-          <button type="button" className="btn" onClick={() => setOpen(true)}>
-            <Plus className="h-4 w-4" /> Import / add usage
+          <button type="button" className="btn-ghost" onClick={() => setOpen(true)}>
+            <Plus className="h-4 w-4" /> Manual add
           </button>
         </div>
         <FilterBar>
@@ -230,10 +286,10 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
       </div>
 
       <div className="panel p-5">
-        <h2 className="font-bold">CSV import (Cursor Usage export)</h2>
+        <h2 className="font-bold">CSV import (optional fallback)</h2>
         <p className="mt-2 text-sm text-muted">
-          Paste a CSV exported from Cursor Dashboard → Usage. Imports are idempotent by content hash.
-          Enterprise Admin APIs are not used.
+          Prefer Sync from Cursor above. CSV is only a fallback when an Admin API key is unavailable.
+          Imports are idempotent by content hash.
         </p>
         <textarea
           className="field mt-3 min-h-[120px] font-mono text-xs"

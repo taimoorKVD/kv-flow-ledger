@@ -214,6 +214,19 @@ export const api = {
       filename,
       csvText,
     }),
+  syncCursorUsage: (days?: number, projectId?: string | null) =>
+    call<{
+      fetched: number;
+      inserted: number;
+      updated: number;
+      attributed: number;
+      pages: number;
+      detail: string;
+    }>("sync_cursor_usage", {
+      days: days ?? 30,
+      projectId: projectId ?? null,
+    }),
+  testCursorApiKey: () => call<string>("test_cursor_api_key"),
   listUsage: (projectId?: string) =>
     call<UsageRecord[]>("list_usage", { projectId: projectId ?? null }),
   installHooks: () => call<Record<string, unknown>>("install_cursor_hooks"),

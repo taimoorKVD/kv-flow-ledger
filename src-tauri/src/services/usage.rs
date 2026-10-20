@@ -271,9 +271,13 @@ pub fn list_usage(db: &Db, project_id: Option<&str>) -> AppResult<Vec<UsageRecor
                 "SELECT id, model, occurred_at, project_id, task_id, total_tokens, reported_cost_minor,
                         billing_source, verification_status, notes
                  FROM ai_usage_records
-                 WHERE project_id = ? OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)
+                 WHERE project_id = ?
+                    OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)
+                    OR (conversation_id IS NOT NULL AND conversation_id IN (
+                          SELECT conversation_id FROM cursor_conversations WHERE project_id = ?
+                        ))
                  ORDER BY occurred_at DESC LIMIT 500",
-                (pid, pid),
+                (pid, pid, pid),
             )?
         } else {
             conn.query(

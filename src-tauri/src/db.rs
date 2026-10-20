@@ -66,8 +66,9 @@ impl Db {
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (1i64, chrono::Utc::now().to_rfc3339()),
                 )?;
-                seed_defaults(conn)?;
             }
+            // Idempotent — safe on every boot so new setting keys appear after upgrades.
+            seed_defaults(conn)?;
             crate::services::currency::seed_default_rates(conn)?;
             Ok(())
         })
@@ -87,6 +88,9 @@ fn seed_defaults(conn: &mut PooledConn) -> AppResult<()> {
         ("ingest_port", "17321"),
         ("ingest_token", ""),
         ("theme", "dark"),
+        ("cursor_api_key", ""),
+        ("cursor_usage_last_sync_at", ""),
+        ("cursor_usage_last_sync_detail", ""),
     ];
     for (k, v) in defaults {
         conn.exec_drop(

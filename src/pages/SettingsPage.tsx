@@ -34,6 +34,10 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
   const [rateValue, setRateValue] = useState("278.50");
   const [rateSearch, setRateSearch] = useState("");
   const [ratePage, setRatePage] = useState(1);
+  const [cursorApiKey, setCursorApiKey] = useState("");
+  const [cursorSyncDetail, setCursorSyncDetail] = useState("");
+  const [cursorSyncAt, setCursorSyncAt] = useState("");
+  const [cursorBusy, setCursorBusy] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -44,6 +48,9 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
       setSalaryCcy(s.values.default_currency ?? "USD");
       setReview((s.values.require_attribution_review ?? "false") === "true");
       if (s.values.theme === "light" || s.values.theme === "dark") setTheme(s.values.theme);
+      setCursorApiKey(s.values.cursor_api_key ?? "");
+      setCursorSyncAt(s.values.cursor_usage_last_sync_at ?? "");
+      setCursorSyncDetail(s.values.cursor_usage_last_sync_detail ?? "");
       setHooks(await api.hooksStatus());
       setAppInfo(await api.getAppInfo());
       setCurrencies(await api.listCurrencies());
@@ -99,6 +106,41 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
     setRates(await api.listExchangeRates());
     setToast(`Rate ${rateBase}→${rateQuote} = ${rateValue} saved`);
     await onRefresh();
+  }
+
+  async function saveCursorApiKey() {
+    await api.saveSettings({ cursor_api_key: cursorApiKey.trim() });
+    setToast(cursorApiKey.trim() ? "Cursor API key saved" : "Cursor API key cleared");
+    await onRefresh();
+  }
+
+  async function testCursorKey() {
+    setCursorBusy(true);
+    try {
+      await api.saveSettings({ cursor_api_key: cursorApiKey.trim() });
+      const msg = await api.testCursorApiKey();
+      setToast(msg);
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCursorBusy(false);
+    }
+  }
+
+  async function syncCursorUsage() {
+    setCursorBusy(true);
+    try {
+      await api.saveSettings({ cursor_api_key: cursorApiKey.trim() });
+      const res = await api.syncCursorUsage(30, null);
+      setCursorSyncDetail(res.detail);
+      setCursorSyncAt(new Date().toISOString());
+      setToast(res.detail);
+      await onRefresh();
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCursorBusy(false);
+    }
   }
 
   async function installHooks() {
@@ -299,6 +341,69 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
           pageSize={RATE_PAGE_SIZE}
           onPage={setRatePage}
         />
+      </div>
+
+      <div className={`panel p-5 ${cursorApiKey.trim() ? "status-ok-panel" : "status-warn-panel"}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold">Cursor usage &amp; cost API</h2>
+            <p className="mt-2 text-sm text-muted">
+              Primary source for AI allocation. Uses the Cursor Admin API (
+              <code>filtered-usage-events</code>) with your dashboard API key — billed{" "}
+              <code>chargedCents</code> and tokens, joined to projects via conversation id from
+              hooks. Teams / Enterprise admin keys from{" "}
+              <code>cursor.com/dashboard → API Keys</code>.
+            </p>
+          </div>
+          <span className={`status-badge ${cursorApiKey.trim() ? "ok" : "warn"}`}>
+            {cursorApiKey.trim() ? "Key saved" : "Key required"}
+          </span>
+        </div>
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className="label">Cursor Admin API key</label>
+            <input
+              className="field mt-1 font-mono text-xs"
+              type="password"
+              autoComplete="off"
+              value={cursorApiKey}
+              placeholder="crsr_…"
+              onChange={(e) => setCursorApiKey(e.target.value)}
+            />
+          </div>
+          {(cursorSyncAt || cursorSyncDetail) && (
+            <div className="soft p-3 text-sm">
+              <div className="tiny">Last sync: {cursorSyncAt || "—"}</div>
+              <div className="mt-1">{cursorSyncDetail || "—"}</div>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="btn"
+              disabled={cursorBusy || !cursorApiKey.trim()}
+              onClick={() => void saveCursorApiKey()}
+            >
+              Save API key
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={cursorBusy || !cursorApiKey.trim()}
+              onClick={() => void testCursorKey()}
+            >
+              Test connection
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={cursorBusy || !cursorApiKey.trim()}
+              onClick={() => void syncCursorUsage()}
+            >
+              {cursorBusy ? "Syncing…" : "Sync last 30 days"}
+            </button>
+          </div>
+        </div>
       </div>
 
       <div className={`panel p-5 ${hooksInstalled ? "status-ok-panel" : "status-warn-panel"}`}>
