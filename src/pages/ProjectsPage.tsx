@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Check, FolderOpen, FolderSync, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  Check,
+  FolderOpen,
+  FolderSync,
+  Loader2,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2,
+  Unlink,
+  X,
+} from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, type ChildDirectory, type WorkspacePathCheck } from "@/lib/api";
 import { dur, money } from "@/lib/format";
@@ -17,11 +29,17 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   const tasks = useAppStore((s) => s.tasks);
   const selectedProjectId = useAppStore((s) => s.selectedProjectId);
   const setSelectedProjectId = useAppStore((s) => s.setSelectedProjectId);
+  const projectsView = useAppStore((s) => s.projectsView);
+  const setProjectsView = useAppStore((s) => s.setProjectsView);
+  const projectsCreateRequest = useAppStore((s) => s.projectsCreateRequest);
   const setToast = useAppStore((s) => s.setToast);
 
   const [showProject, setShowProject] = useState(false);
   const [showSyncLocal, setShowSyncLocal] = useState(false);
   const [editingProject, setEditingProject] = useState(false);
+  const [librarySearch, setLibrarySearch] = useState("");
+  const [clearingWorkspaces, setClearingWorkspaces] = useState(false);
+  const [syncingTasks, setSyncingTasks] = useState(false);
   const [pName, setPName] = useState("");
   const [pClient, setPClient] = useState("");
   const [pWorkspace, setPWorkspace] = useState("");
@@ -131,6 +149,14 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
     return () => window.clearTimeout(t);
   }, [pWorkspace]);
 
+  useEffect(() => {
+    if (projectsCreateRequest > 0) {
+      setProjectsView("library");
+      openCreateModal();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open create when header requests it
+  }, [projectsCreateRequest]);
+
   function openCreateModal() {
     setEditingProject(false);
     setPName("");
@@ -140,6 +166,11 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
     setPBudget("0");
     setPCurrency("USD");
     setShowProject(true);
+  }
+
+  function openProjectDetail(id: string) {
+    setSelectedProjectId(id);
+    setProjectsView("detail");
   }
 
   function openEditModal() {
@@ -187,9 +218,11 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
       setToast("Project updated");
     } else {
       const created = await api.createProject(input);
-      setSelectedProjectId(created.id);
       setShowProject(false);
       setToast(`Project created (${pCurrency})`);
+      await onRefresh();
+      openProjectDetail(created.id);
+      return;
     }
     await onRefresh();
   }
@@ -204,12 +237,61 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
     try {
       await api.deleteProject(selectedProjectId);
       setSelectedProjectId(null);
+      setProjectsView("library");
       setToast("Project deleted");
       await onRefresh();
     } finally {
       setDeleting(false);
     }
   }
+
+  async function clearProjectWorkspaces() {
+    if (!project || !selectedProjectId) return;
+    if (!project.workspaces.length) {
+      setToast("No workspace folders mapped on this project");
+      return;
+    }
+    const ok = window.confirm(
+      `Clear ${project.workspaces.length} workspace path(s) from “${project.name}”? Future Cursor chats in those folders will no longer auto-attribute until remapped.`
+    );
+    if (!ok) return;
+    setClearingWorkspaces(true);
+    try {
+      await api.clearProjectWorkspaces(selectedProjectId);
+      setToast("Workspace listing cleared for this project");
+      await onRefresh();
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setClearingWorkspaces(false);
+    }
+  }
+
+  async function syncTasksFromChats() {
+    if (!project || !selectedProjectId) return;
+    setSyncingTasks(true);
+    try {
+      const res = await api.syncProjectTasks(selectedProjectId);
+      setToast(res.detail);
+      await onRefresh();
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncingTasks(false);
+    }
+  }
+
+  const libraryProjects = useMemo(() => {
+    const q = librarySearch.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) => {
+      const hay = [p.name, p.client, ...(p.workspaces ?? [])]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [projects, librarySearch]);
 
   async function saveFinances() {
     if (!selectedProjectId) return;
@@ -244,14 +326,155 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
     await onRefresh();
   }
 
+  if (projectsView === "library") {
+    return (
+      <section className="space-y-4">
+        <div className="panel p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold">Project library</h2>
+              <p className="tiny mt-1">
+                Create projects or bulk-sync local folders here. Open a project to manage its tasks,
+                finances, workspaces, and attribution.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="btn" onClick={openCreateModal}>
+                <Plus className="h-4 w-4" /> New project
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setShowSyncLocal(true)}>
+                <FolderSync className="h-4 w-4" /> Sync local folders
+              </button>
+            </div>
+          </div>
+
+          <FilterBar>
+            <div className="min-w-[160px] flex-1">
+              <label className="label">Search projects</label>
+              <input
+                className="field mt-1"
+                value={librarySearch}
+                placeholder="Name, client, or workspace path"
+                onChange={(e) => setLibrarySearch(e.target.value)}
+              />
+            </div>
+          </FilterBar>
+
+          <div className="mt-2 space-y-2">
+            {libraryProjects.length === 0 ? (
+              <p className="text-sm text-muted">
+                {projects.length === 0
+                  ? "No projects yet — create one or sync local folders."
+                  : "No projects match your search."}
+              </p>
+            ) : (
+              libraryProjects.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  className="soft flex w-full flex-wrap items-center justify-between gap-3 p-3 text-left transition hover:border-accent/40"
+                  onClick={() => openProjectDetail(p.id)}
+                >
+                  <div className="min-w-0">
+                    <div className="font-semibold">{p.name}</div>
+                    <div className="tiny mt-0.5">
+                      {p.client ? `Org / client: ${p.client}` : "No org / client set"}
+                      {p.workspaces.length
+                        ? ` · ${p.workspaces.length} workspace${p.workspaces.length === 1 ? "" : "s"}`
+                        : " · No workspaces"}
+                    </div>
+                    {p.workspaces[0] && (
+                      <div className="tiny mt-0.5 break-all opacity-80">{p.workspaces[0]}</div>
+                    )}
+                  </div>
+                  <span className="pill shrink-0">Open</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        {showProject && !editingProject && (
+          <Modal
+            title="Create project"
+            onClose={() => setShowProject(false)}
+            onSave={() => void saveProject()}
+            saveLabel="Create"
+          >
+            <Field label="Name" value={pName} onChange={setPName} />
+            <Field label="Org / client" value={pClient} onChange={setPClient} />
+            <div>
+              <label className="label">Workspace directory</label>
+              <div className="mt-1 flex gap-2">
+                <input
+                  className={`field flex-1 ${
+                    pWorkspaceCheck?.valid
+                      ? "field-ok"
+                      : pWorkspace.trim() && pWorkspaceCheck && !pWorkspaceCheck.valid
+                        ? "field-bad"
+                        : ""
+                  }`}
+                  value={pWorkspace}
+                  placeholder="Choose a folder or paste absolute path"
+                  onChange={(e) => setPWorkspace(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn-ghost shrink-0"
+                  onClick={() => void pickWorkspaceFolder()}
+                >
+                  <FolderOpen className="h-4 w-4" /> Browse
+                </button>
+              </div>
+              {pWorkspace.trim() && pWorkspaceCheck && (
+                <p className={`tiny mt-1 ${pWorkspaceCheck.valid ? "path-ok" : "path-bad"}`}>
+                  {pWorkspaceCheck.valid ? "✓ " : "✗ "}
+                  {pWorkspaceCheck.detail}
+                  {pWorkspaceCheck.normalized ? ` · ${pWorkspaceCheck.normalized}` : ""}
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="label">Currency</label>
+              <select
+                className="field mt-1"
+                value={pCurrency}
+                onChange={(e) => setPCurrency(e.target.value)}
+              >
+                {currencies.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.code} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field label={`Total payment (${pCurrency})`} value={pBudget} onChange={setPBudget} />
+          </Modal>
+        )}
+
+        {showSyncLocal && (
+          <SyncLocalFoldersModal
+            currencies={currencies}
+            existingWorkspaceKeys={new Set(
+              projects.flatMap((p) => p.workspaces.map((w) => pathKey(w)))
+            )}
+            onClose={() => setShowSyncLocal(false)}
+            onDone={async (createdIds) => {
+              setShowSyncLocal(false);
+              await onRefresh();
+              if (createdIds[0]) openProjectDetail(createdIds[0]);
+            }}
+          />
+        )}
+      </section>
+    );
+  }
+
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap gap-2">
-        <button type="button" className="btn" onClick={openCreateModal}>
-          <Plus className="h-4 w-4" /> New project
-        </button>
-        <button type="button" className="btn-ghost" onClick={() => setShowSyncLocal(true)}>
-          <FolderSync className="h-4 w-4" /> Sync local folders
+        <button type="button" className="btn-ghost" onClick={() => setProjectsView("library")}>
+          <ArrowLeft className="h-4 w-4" /> All projects
         </button>
         <button
           type="button"
@@ -264,6 +487,19 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
         <button
           type="button"
           className="btn-ghost"
+          disabled={!project || !project.workspaces.length || clearingWorkspaces}
+          onClick={() => void clearProjectWorkspaces()}
+        >
+          {clearingWorkspaces ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Unlink className="h-4 w-4" />
+          )}
+          Clear workspaces
+        </button>
+        <button
+          type="button"
+          className="btn-ghost"
           disabled={!project || deleting}
           onClick={() => void deleteSelectedProject()}
         >
@@ -271,16 +507,39 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
         </button>
       </div>
 
+      {!project ? (
+        <div className="panel p-8 text-sm text-muted">
+          No project selected.{" "}
+          <button type="button" className="font-semibold text-accent" onClick={() => setProjectsView("library")}>
+            Open the project library
+          </button>
+        </div>
+      ) : null}
+
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="panel p-5 lg:col-span-2">
-          <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-lg font-bold">Tasks & conversations</h2>
               <p className="tiny mt-1">
-                Tasks are created when you start or continue a Cursor chat in a mapped workspace.
-                Click a title to rename.
+                Tasks are created from Cursor chats in mapped workspaces. Use{" "}
+                <strong>Sync tasks from chats</strong> to create/link a task for every chat already
+                seen on this project.
               </p>
             </div>
+            <button
+              type="button"
+              className="btn shrink-0"
+              disabled={!project || syncingTasks}
+              onClick={() => void syncTasksFromChats()}
+            >
+              {syncingTasks ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              {syncingTasks ? "Syncing…" : "Sync tasks from chats"}
+            </button>
           </div>
           <FilterBar>
             <div className="min-w-[160px] flex-1">
@@ -393,10 +652,34 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
               <div>
                 <div className="label">Project</div>
                 <div className="mt-1 font-semibold">{project.name}</div>
-                {project.client && <div className="tiny mt-1">Client: {project.client}</div>}
                 <div className="tiny mt-1">
-                  Workspaces:{" "}
-                  {project.workspaces.length ? project.workspaces.join(", ") : "None mapped"}
+                  Org / client: {project.client?.trim() ? project.client : "—"}
+                </div>
+                <div className="mt-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="label">Workspace listing</div>
+                    {project.workspaces.length > 0 && (
+                      <button
+                        type="button"
+                        className="tiny font-semibold text-accent"
+                        disabled={clearingWorkspaces}
+                        onClick={() => void clearProjectWorkspaces()}
+                      >
+                        Clear all
+                      </button>
+                    )}
+                  </div>
+                  {project.workspaces.length === 0 ? (
+                    <p className="tiny mt-1">None mapped</p>
+                  ) : (
+                    <ul className="mt-1 space-y-1">
+                      {project.workspaces.map((w) => (
+                        <li key={w} className="tiny break-all">
+                          {w}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               </div>
               <div>
@@ -466,25 +749,38 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
         </div>
       </div>
 
-      <div className="panel p-5">
-        <h2 className="font-bold">Project attribution policy</h2>
-        <p className="mt-2 text-sm text-muted">
-          Review is scoped to the selected project. Assigning maps the workspace folder to this
-          project and creates a General task when needed so future Cursor chats attribute
-          automatically.
-        </p>
-        <UnassignedReview onRefresh={onRefresh} />
-      </div>
+      {project && (
+        <div className="panel p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="font-bold">Attribution policy · {project.name}</h2>
+              <p className="tiny mt-1">
+                Org / client: {project.client?.trim() ? project.client : "—"} · This review applies
+                only to this project, not the whole library.
+              </p>
+              <p className="mt-2 text-sm text-muted">
+                Assigning maps a workspace folder onto <strong>{project.name}</strong> and creates a
+                General task when needed so future Cursor chats on that folder attribute here.
+              </p>
+            </div>
+          </div>
+          <UnassignedReview
+            onRefresh={onRefresh}
+            projectId={selectedProjectId!}
+            projectName={project.name}
+          />
+        </div>
+      )}
 
-      {showProject && (
+      {showProject && editingProject && (
         <Modal
-          title={editingProject ? "Edit project" : "Create project"}
+          title="Edit project"
           onClose={() => setShowProject(false)}
           onSave={() => void saveProject()}
-          saveLabel={editingProject ? "Save changes" : "Create"}
+          saveLabel="Save changes"
         >
           <Field label="Name" value={pName} onChange={setPName} />
-          <Field label="Client" value={pClient} onChange={setPClient} />
+          <Field label="Org / client" value={pClient} onChange={setPClient} />
           <div>
             <label className="label">Workspace directory</label>
             <div className="mt-1 flex gap-2">
@@ -513,6 +809,10 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
                   : ""}
               </p>
             )}
+            <p className="tiny mt-1">
+              Leave blank and save to clear the primary workspace, or use Clear workspaces above to
+              remove all mapped paths.
+            </p>
           </div>
           <div>
             <label className="label">Currency</label>
@@ -530,21 +830,6 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
           </div>
           <Field label={`Total payment (${pCurrency})`} value={pBudget} onChange={setPBudget} />
         </Modal>
-      )}
-
-      {showSyncLocal && (
-        <SyncLocalFoldersModal
-          currencies={currencies}
-          existingWorkspaceKeys={new Set(
-            projects.flatMap((p) => p.workspaces.map((w) => pathKey(w)))
-          )}
-          onClose={() => setShowSyncLocal(false)}
-          onDone={async (createdIds) => {
-            setShowSyncLocal(false);
-            await onRefresh();
-            if (createdIds[0]) setSelectedProjectId(createdIds[0]);
-          }}
-        />
       )}
     </section>
   );
@@ -949,9 +1234,16 @@ function SyncLocalFoldersModal({
   );
 }
 
-function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
+function UnassignedReview({
+  onRefresh,
+  projectId,
+  projectName,
+}: {
+  onRefresh: () => Promise<void>;
+  projectId: string;
+  projectName: string;
+}) {
   const tasks = useAppStore((s) => s.tasks);
-  const selectedProjectId = useAppStore((s) => s.selectedProjectId);
   const setToast = useAppStore((s) => s.setToast);
 
   const [items, setItems] = useState<Array<Record<string, string>>>([]);
@@ -965,9 +1257,10 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
   const [searchInput, setSearchInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [assigningId, setAssigningId] = useState<string | null>(null);
+  const [clearingAttribution, setClearingAttribution] = useState(false);
 
   async function load(nextPage = page) {
-    if (!selectedProjectId) {
+    if (!projectId) {
       setItems([]);
       setTotal(0);
       setReasons([]);
@@ -976,7 +1269,7 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
     setLoading(true);
     try {
       const res = await api.listUnassignedPage({
-        projectId: selectedProjectId,
+        projectId,
         reason: reason === "all" ? null : reason,
         search: search.trim() || null,
         conversation: conversation === "all" ? null : conversation,
@@ -998,25 +1291,48 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
   useEffect(() => {
     void load(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when filters / project change
-  }, [reason, conversation, search, pageSize, selectedProjectId]);
+  }, [reason, conversation, search, pageSize, projectId]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   async function assignToProject(itemId: string) {
-    if (!selectedProjectId) return;
+    if (!projectId) return;
     setAssigningId(itemId);
     try {
       // Prefer an existing non-General task when present; otherwise backend creates General.
       const preferred =
         tasks.find((t) => t.title !== "General")?.id ?? tasks[0]?.id ?? null;
-      await api.assignUnassigned(itemId, selectedProjectId, preferred);
-      setToast("Assigned to current project (workspace mapped)");
+      await api.assignUnassigned(itemId, projectId, preferred);
+      setToast(`Assigned to ${projectName} (workspace mapped)`);
       await onRefresh();
       await load(page);
     } catch (e) {
       setToast(e instanceof Error ? e.message : "Assign failed");
     } finally {
       setAssigningId(null);
+    }
+  }
+
+  async function clearProjectAttribution() {
+    if (!projectId) return;
+    const ok = window.confirm(
+      `Clear the attribution queue for “${projectName}”? Pending review rows for this project will be dismissed (they are not deleted from activity history).`
+    );
+    if (!ok) return;
+    setClearingAttribution(true);
+    try {
+      const n = await api.dismissUnassignedForProject(projectId);
+      setToast(
+        n === 0
+          ? `No pending attribution rows for ${projectName}`
+          : `Cleared ${n} attribution row(s) for ${projectName}`
+      );
+      await onRefresh();
+      await load(1);
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : String(e));
+    } finally {
+      setClearingAttribution(false);
     }
   }
 
@@ -1083,23 +1399,28 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
         >
           Dismiss empty noise
         </button>
+        <button
+          type="button"
+          className="btn-ghost"
+          disabled={clearingAttribution || total === 0}
+          onClick={() => void clearProjectAttribution()}
+        >
+          {clearingAttribution ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" /> Clearing…
+            </>
+          ) : (
+            "Clear attribution queue"
+          )}
+        </button>
       </FilterBar>
 
       <p className="tiny">
-        {!selectedProjectId
-          ? "Select a project to review attribution for that project."
-          : loading
-            ? "Loading…"
-            : `${total} pending for this project`}{" "}
-        · page {page} of {totalPages}
+        {loading ? "Loading…" : `${total} pending for ${projectName}`} · page {page} of {totalPages}
       </p>
 
       {items.length === 0 ? (
-        <p className="tiny">
-          {!selectedProjectId
-            ? "Choose a project above."
-            : "No pending unassigned activity for this project."}
-        </p>
+        <p className="tiny">No pending unassigned activity for {projectName}.</p>
       ) : (
         items.map((item) => (
           <div key={item.id} className="soft flex flex-wrap items-center justify-between gap-3 p-3">
@@ -1109,16 +1430,16 @@ function UnassignedReview({ onRefresh }: { onRefresh: () => Promise<void> }) {
                 {item.workspace_path || "—"} · {item.conversation_id || "no conversation"}
               </div>
               <p className="tiny mt-1">
-                Assign maps this workspace to the selected project and links the conversation.
+                Assign maps this workspace to {projectName} only and links the conversation.
               </p>
             </div>
             <button
               type="button"
               className="btn"
-              disabled={!selectedProjectId || assigningId === item.id}
+              disabled={assigningId === item.id}
               onClick={() => void assignToProject(item.id)}
             >
-              {assigningId === item.id ? "Assigning…" : "Assign to current project"}
+              {assigningId === item.id ? "Assigning…" : `Assign to ${projectName}`}
             </button>
           </div>
         ))

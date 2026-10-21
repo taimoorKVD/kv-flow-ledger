@@ -313,6 +313,64 @@ pub fn dismiss_noise_unassigned(db: &Db) -> AppResult<i64> {
     })
 }
 
+/// Dismiss all pending attribution rows currently shown for a project review.
+pub fn dismiss_unassigned_for_project(db: &Db, project_id: &str) -> AppResult<i64> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err(crate::error::AppError::Message(
+            "project id required".into(),
+        ));
+    }
+    // Same scope as list_unassigned_page when project_id is set — clear that queue.
+    let page = list_unassigned_page(
+        db,
+        &crate::models::UnassignedQuery {
+            project_id: Some(project_id.to_string()),
+            page: Some(1),
+            page_size: Some(100),
+            ..Default::default()
+        },
+    )?;
+    if page.total == 0 {
+        return Ok(0);
+    }
+    // Page through and collect all ids (cap at 2000).
+    let mut ids: Vec<String> = page.items.into_iter().map(|i| i.id).collect();
+    let total_pages = ((page.total as f64) / 100.0).ceil() as u32;
+    for p in 2..=total_pages.min(20) {
+        let next = list_unassigned_page(
+            db,
+            &crate::models::UnassignedQuery {
+                project_id: Some(project_id.to_string()),
+                page: Some(p),
+                page_size: Some(100),
+                ..Default::default()
+            },
+        )?;
+        ids.extend(next.items.into_iter().map(|i| i.id));
+    }
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    db.with_conn(|conn| {
+        let mut dismissed = 0i64;
+        for id in &ids {
+            conn.exec_drop(
+                "UPDATE unassigned_activity
+                 SET status = 'dismissed', resolved_at = ?, resolved_project_id = ?
+                 WHERE id = ? AND status = 'pending'",
+                (&now, project_id, id),
+            )?;
+            dismissed += conn.affected_rows() as i64;
+        }
+        Ok(dismissed)
+    })
+}
+
 pub fn assign_unassigned(
     db: &Db,
     unassigned_id: &str,

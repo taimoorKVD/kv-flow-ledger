@@ -23,6 +23,9 @@ const nav: { id: PageId; label: string }[] = [
 export default function App() {
   const page = useAppStore((s) => s.page);
   const setPage = useAppStore((s) => s.setPage);
+  const projectsView = useAppStore((s) => s.projectsView);
+  const setProjectsView = useAppStore((s) => s.setProjectsView);
+  const requestProjectsCreate = useAppStore((s) => s.requestProjectsCreate);
   const projects = useAppStore((s) => s.projects);
   const setProjects = useAppStore((s) => s.setProjects);
   const selectedProjectId = useAppStore((s) => s.selectedProjectId);
@@ -87,7 +90,13 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [toast, setToast]);
 
-  const [title, sub] = pageMeta[page];
+  const [title, sub] =
+    page === "projects" && projectsView === "detail"
+      ? [
+          projects.find((p) => p.id === selectedProjectId)?.name ?? "Project detail",
+          "Tasks, finances, and attribution for this project only.",
+        ]
+      : pageMeta[page];
   const tracking = dashboard?.tracking;
   const connected = Boolean(tracking?.ingest_listening);
 
@@ -122,7 +131,10 @@ export default function App() {
                   key={n.id}
                   type="button"
                   className={`navtab ${page === n.id ? "active" : ""}`}
-                  onClick={() => setPage(n.id)}
+                  onClick={() => {
+                    if (n.id === "projects") setProjectsView("library");
+                    setPage(n.id);
+                  }}
                 >
                   {n.label}
                 </button>
@@ -148,7 +160,13 @@ export default function App() {
             <div className="soft flex items-center gap-2 px-3 py-2">
               <SearchableSelect
                 value={selectedProjectId ?? ""}
-                onChange={(id) => setSelectedProjectId(id || null)}
+                onChange={(id) => {
+                  setSelectedProjectId(id || null);
+                  if (id) {
+                    setProjectsView("detail");
+                    setPage("projects");
+                  }
+                }}
                 options={projects.map((p) => ({
                   value: p.id,
                   label: p.name,
@@ -159,13 +177,11 @@ export default function App() {
                 searchPlaceholder="Search projects…"
               />
             </div>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setPage("projects")}
-            >
-              <Plus className="h-4 w-4" /> New project
-            </button>
+            {page !== "projects" && (
+              <button type="button" className="btn" onClick={() => requestProjectsCreate()}>
+                <Plus className="h-4 w-4" /> New project
+              </button>
+            )}
           </div>
         </div>
 

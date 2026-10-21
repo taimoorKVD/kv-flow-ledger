@@ -131,6 +131,16 @@ export const api = {
   updateProject: (projectId: string, input: Record<string, unknown>) =>
     call<Project>("update_project", { projectId, input }),
   deleteProject: (projectId: string) => call<void>("delete_project", { projectId }),
+  clearProjectWorkspaces: (projectId: string) =>
+    call<Project>("clear_project_workspaces", { projectId }),
+  syncProjectTasks: (projectId: string) =>
+    call<{
+      conversations: number;
+      tasks_created: number;
+      tasks_linked: number;
+      events_rebound: number;
+      detail: string;
+    }>("sync_project_tasks", { projectId }),
   listTasks: (projectId?: string) =>
     call<Task[]>("list_tasks", { projectId: projectId ?? null }),
   createTask: (input: Record<string, unknown>) => call<Task>("create_task", { input }),
@@ -209,6 +219,8 @@ export const api = {
       },
     }),
   dismissNoiseUnassigned: () => call<number>("dismiss_noise_unassigned"),
+  dismissUnassignedForProject: (projectId: string) =>
+    call<number>("dismiss_unassigned_for_project", { projectId }),
   assignUnassigned: (unassignedId: string, projectId: string, taskId?: string | null) =>
     call<void>("assign_unassigned", {
       unassignedId,

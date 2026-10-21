@@ -167,6 +167,171 @@ pub fn delete_project(db: &Db, project_id: &str) -> AppResult<()> {
     })
 }
 
+/// Remove every mapped workspace path from a project.
+pub fn clear_project_workspaces(db: &Db, project_id: &str) -> AppResult<Project> {
+    if get_project(db, project_id)?.is_none() {
+        return Err(AppError::Message("project not found".into()));
+    }
+    db.with_conn(|conn| {
+        conn.exec_drop(
+            "DELETE FROM project_workspaces WHERE project_id = ?",
+            (project_id,),
+        )?;
+        Ok(())
+    })?;
+    get_project(db, project_id)?.ok_or_else(|| AppError::Message("project missing after clear".into()))
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncProjectTasksResult {
+    pub conversations: i64,
+    pub tasks_created: i64,
+    pub tasks_linked: i64,
+    pub events_rebound: i64,
+    pub detail: String,
+}
+
+/// Rebuild/link Chat · tasks from conversations seen on this project's workspaces
+/// (and conversations already linked to the project).
+pub fn sync_project_tasks(db: &Db, project_id: &str) -> AppResult<SyncProjectTasksResult> {
+    let project = get_project(db, project_id)?
+        .ok_or_else(|| AppError::Message("project not found".into()))?;
+
+    // Collect conversation ids from events on mapped workspaces + existing project links.
+    let mut conversation_ids: Vec<String> = db.with_conn(|conn| {
+        let mut ids: Vec<String> = conn.exec_map(
+            "SELECT DISTINCT conversation_id FROM cursor_conversations
+             WHERE project_id = ?
+               AND conversation_id IS NOT NULL AND TRIM(conversation_id) <> ''",
+            (project_id,),
+            |id: String| id,
+        )?;
+
+        let mut variants: Vec<String> = Vec::new();
+        for path in &project.workspaces {
+            variants.extend(workspace_lookup_variants(path));
+        }
+        variants.sort();
+        variants.dedup();
+
+        if !variants.is_empty() {
+            let mut sql = String::from(
+                "SELECT DISTINCT conversation_id FROM cursor_events
+                 WHERE conversation_id IS NOT NULL AND TRIM(conversation_id) <> ''
+                   AND LOWER(IFNULL(workspace_path,'')) IN (",
+            );
+            for (i, _) in variants.iter().enumerate() {
+                if i > 0 {
+                    sql.push(',');
+                }
+                sql.push('?');
+            }
+            sql.push(')');
+            let params: Vec<mysql::Value> = variants
+                .iter()
+                .map(|v| v.to_ascii_lowercase().into())
+                .collect();
+            let from_events: Vec<String> = conn.exec_map(sql, params, |id: String| id)?;
+            ids.extend(from_events);
+
+            let mut sql2 = String::from(
+                "SELECT DISTINCT conversation_id FROM cursor_conversations
+                 WHERE conversation_id IS NOT NULL AND TRIM(conversation_id) <> ''
+                   AND LOWER(IFNULL(workspace_path,'')) IN (",
+            );
+            for (i, _) in variants.iter().enumerate() {
+                if i > 0 {
+                    sql2.push(',');
+                }
+                sql2.push('?');
+            }
+            sql2.push(')');
+            let params2: Vec<mysql::Value> = variants
+                .iter()
+                .map(|v| v.to_ascii_lowercase().into())
+                .collect();
+            let from_conv: Vec<String> = conn.exec_map(sql2, params2, |id: String| id)?;
+            ids.extend(from_conv);
+        }
+
+        // Also events already stamped with this project_id but missing a task link.
+        let stamped: Vec<String> = conn.exec_map(
+            "SELECT DISTINCT conversation_id FROM cursor_events
+             WHERE project_id = ?
+               AND conversation_id IS NOT NULL AND TRIM(conversation_id) <> ''",
+            (project_id,),
+            |id: String| id,
+        )?;
+        ids.extend(stamped);
+
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    })?;
+
+    let mut tasks_created = 0i64;
+    let mut tasks_linked = 0i64;
+    let mut events_rebound = 0i64;
+
+    // Ensure General exists for workspace-only activity.
+    let _ = ensure_general_task(db, project_id)?;
+
+    for cid in &conversation_ids {
+        let before = db.with_conn(|conn| {
+            let row: Option<Option<String>> = conn.exec_first(
+                "SELECT task_id FROM cursor_conversations WHERE conversation_id = ?",
+                (cid,),
+            )?;
+            Ok(row.flatten())
+        })?;
+
+        let (_pid, tid) = ensure_task_for_conversation(db, project_id, cid)?;
+        if before.is_none() {
+            tasks_created += 1;
+        } else {
+            tasks_linked += 1;
+        }
+
+        let rebound = db.with_conn(|conn| {
+            let now = Utc::now().to_rfc3339();
+            conn.exec_drop(
+                "UPDATE cursor_conversations
+                 SET project_id = ?, task_id = ?, last_seen_at = ?
+                 WHERE conversation_id = ?",
+                (project_id, &tid, &now, cid),
+            )?;
+            conn.exec_drop(
+                "UPDATE cursor_events
+                 SET project_id = ?, task_id = ?
+                 WHERE conversation_id = ?",
+                (project_id, &tid, cid),
+            )?;
+            let n_events = conn.affected_rows() as i64;
+            conn.exec_drop(
+                "UPDATE activity_intervals
+                 SET project_id = ?, task_id = ?
+                 WHERE conversation_id = ?",
+                (project_id, &tid, cid),
+            )?;
+            Ok(n_events)
+        })?;
+        events_rebound += rebound;
+    }
+
+    let conversations = conversation_ids.len() as i64;
+    let detail = format!(
+        "Synced {conversations} chat(s) → {tasks_created} new task(s), {tasks_linked} already linked, {events_rebound} event(s) rebound"
+    );
+
+    Ok(SyncProjectTasksResult {
+        conversations,
+        tasks_created,
+        tasks_linked,
+        events_rebound,
+        detail,
+    })
+}
+
 pub fn get_project(db: &Db, id: &str) -> AppResult<Option<Project>> {
     db.with_conn(|conn| {
         let row: Option<(

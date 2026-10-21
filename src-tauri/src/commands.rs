@@ -43,6 +43,22 @@ pub fn delete_project(state: State<'_, AppState>, project_id: String) -> AppResu
 }
 
 #[tauri::command]
+pub fn clear_project_workspaces(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> AppResult<Project> {
+    projects::clear_project_workspaces(&state.db, &project_id)
+}
+
+#[tauri::command]
+pub fn sync_project_tasks(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> AppResult<projects::SyncProjectTasksResult> {
+    projects::sync_project_tasks(&state.db, &project_id)
+}
+
+#[tauri::command]
 pub fn list_tasks(state: State<'_, AppState>, project_id: Option<String>) -> AppResult<Vec<Task>> {
     projects::list_tasks(&state.db, project_id.as_deref())
 }
@@ -124,6 +140,14 @@ pub fn list_unassigned_page(
 #[tauri::command]
 pub fn dismiss_noise_unassigned(state: State<'_, AppState>) -> AppResult<i64> {
     attribution::dismiss_noise_unassigned(&state.db)
+}
+
+#[tauri::command]
+pub fn dismiss_unassigned_for_project(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> AppResult<i64> {
+    attribution::dismiss_unassigned_for_project(&state.db, &project_id)
 }
 
 #[tauri::command]

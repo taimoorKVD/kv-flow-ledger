@@ -56,6 +56,12 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
       setCursorSessionToken(s.values.cursor_session_token ?? "");
       setCursorSyncAt(s.values.cursor_usage_last_sync_at ?? "");
       setCursorSyncDetail(s.values.cursor_usage_last_sync_detail ?? "");
+      setCursorConnected((s.values.cursor_connection_ok ?? "") === "true");
+      setCursorSource(s.values.cursor_connection_source ?? "");
+      const storedErr = s.values.cursor_connection_detail ?? "";
+      setCursorAuthError(
+        (s.values.cursor_connection_ok ?? "") === "true" ? null : storedErr || null
+      );
       setHooks(await api.hooksStatus());
       setAppInfo(await api.getAppInfo());
       setCurrencies(await api.listCurrencies());
@@ -117,19 +123,54 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
     return raw.trim().replace(/^["'`]+|["'`]+$/g, "").replace(/[\s\r\n\t]/g, "");
   }
 
-  async function saveCursorCredentials() {
-    const key = sanitizeKey(cursorApiKey);
-    const session = cursorSessionToken.trim();
-    setCursorApiKey(key);
-    await api.saveSettings({
-      cursor_api_key: key,
-      cursor_session_token: session,
-    });
-    setCursorConnected(false);
+  async function markCursorVerified(source: string, detail?: string) {
+    setCursorConnected(true);
+    setCursorSource(source);
     setCursorAuthError(null);
+    await api.saveSettings({
+      cursor_connection_ok: "true",
+      cursor_connection_source: source,
+      cursor_connection_detail: detail ?? "",
+    });
+  }
+
+  async function markCursorUnverified(errorMsg?: string) {
+    setCursorConnected(false);
     setCursorSource("");
-    setToast("Cursor credentials saved — click Test connection");
-    await onRefresh();
+    if (errorMsg) setCursorAuthError(errorMsg);
+    await api.saveSettings({
+      cursor_connection_ok: "false",
+      cursor_connection_source: "",
+      cursor_connection_detail: errorMsg ?? "",
+    });
+  }
+
+  async function saveCursorCredentials() {
+    setCursorBusy(true);
+    setCursorAuthError(null);
+    try {
+      const key = sanitizeKey(cursorApiKey);
+      const session = cursorSessionToken.trim();
+      setCursorApiKey(key);
+      await api.saveSettings({
+        cursor_api_key: key,
+        cursor_session_token: session,
+      });
+      // Re-verify immediately so Save does not wipe a successful Test.
+      const msg = await api.testCursorApiKey();
+      const source = msg.toLowerCase().includes("dashboard") || msg.toLowerCase().includes("session")
+        ? "dashboard_session"
+        : "team_admin_api";
+      await markCursorVerified(source, msg);
+      setToast(`Saved and verified — ${msg}`);
+      await onRefresh();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      await markCursorUnverified(msg);
+      setToast(`Saved, but connection failed: ${msg}`);
+    } finally {
+      setCursorBusy(false);
+    }
   }
 
   async function testCursorKey() {
@@ -143,13 +184,14 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
         cursor_session_token: cursorSessionToken.trim(),
       });
       const msg = await api.testCursorApiKey();
-      setCursorConnected(true);
-      setCursorSource(msg.includes("dashboard") ? "dashboard_session" : "team_admin_api");
+      const source = msg.toLowerCase().includes("dashboard") || msg.toLowerCase().includes("session")
+        ? "dashboard_session"
+        : "team_admin_api";
+      await markCursorVerified(source, msg);
       setToast(msg);
     } catch (e) {
-      setCursorConnected(false);
       const msg = e instanceof Error ? e.message : String(e);
-      setCursorAuthError(msg);
+      await markCursorUnverified(msg);
       setToast(msg);
     } finally {
       setCursorBusy(false);
@@ -169,14 +211,12 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
       const res = await api.syncCursorUsage(30, null);
       setCursorSyncDetail(res.detail);
       setCursorSyncAt(new Date().toISOString());
-      setCursorConnected(true);
-      setCursorSource(res.source);
+      await markCursorVerified(res.source, res.detail);
       setToast(res.detail);
       await onRefresh();
     } catch (e) {
-      setCursorConnected(false);
       const msg = e instanceof Error ? e.message : String(e);
-      setCursorAuthError(msg);
+      await markCursorUnverified(msg);
       setToast(msg);
     } finally {
       setCursorBusy(false);
@@ -456,7 +496,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
               disabled={cursorBusy}
               onClick={() => void saveCursorCredentials()}
             >
-              Save
+              {cursorBusy ? "Saving…" : "Save"}
             </button>
             <button
               type="button"
@@ -464,7 +504,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
               disabled={cursorBusy}
               onClick={() => void testCursorKey()}
             >
-              Test connection
+              {cursorBusy ? "Testing…" : "Test connection"}
             </button>
             <button
               type="button"
@@ -472,7 +512,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
               disabled={cursorBusy}
               onClick={() => void syncCursorUsage()}
             >
-              {cursorBusy ? "Syncing…" : "Sync last 30 days"}
+              {cursorBusy ? "Working…" : "Sync last 30 days"}
             </button>
           </div>
         </div>

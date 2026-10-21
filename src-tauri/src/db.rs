@@ -92,6 +92,9 @@ fn seed_defaults(conn: &mut PooledConn) -> AppResult<()> {
         ("cursor_session_token", ""),
         ("cursor_usage_last_sync_at", ""),
         ("cursor_usage_last_sync_detail", ""),
+        ("cursor_connection_ok", "false"),
+        ("cursor_connection_source", ""),
+        ("cursor_connection_detail", ""),
     ];
     for (k, v) in defaults {
         conn.exec_drop(

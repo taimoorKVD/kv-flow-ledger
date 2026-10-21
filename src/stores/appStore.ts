@@ -9,9 +9,16 @@ export type PageId =
   | "finance"
   | "settings";
 
+/** Library = create / sync / browse all; Detail = selected project only */
+export type ProjectsView = "library" | "detail";
+
 type AppStore = {
   page: PageId;
   setPage: (p: PageId) => void;
+  projectsView: ProjectsView;
+  setProjectsView: (v: ProjectsView) => void;
+  projectsCreateRequest: number;
+  requestProjectsCreate: () => void;
   projects: Project[];
   setProjects: (p: Project[]) => void;
   selectedProjectId: string | null;
@@ -33,6 +40,15 @@ type AppStore = {
 export const useAppStore = create<AppStore>((set) => ({
   page: "overview",
   setPage: (page) => set({ page }),
+  projectsView: "library",
+  setProjectsView: (projectsView) => set({ projectsView }),
+  projectsCreateRequest: 0,
+  requestProjectsCreate: () =>
+    set((s) => ({
+      page: "projects",
+      projectsView: "library",
+      projectsCreateRequest: s.projectsCreateRequest + 1,
+    })),
   projects: [],
   setProjects: (projects) => set({ projects }),
   selectedProjectId: null,
@@ -58,7 +74,7 @@ export const pageMeta: Record<PageId, [string, string]> = {
   ],
   projects: [
     "Projects & task attribution",
-    "Associate sessions and conversations with the correct deliverables.",
+    "Create projects in the library, then manage tasks and attribution per project.",
   ],
   activity: [
     "Activity timeline",
