@@ -222,6 +222,7 @@ export const api = {
       attributed: number;
       pages: number;
       detail: string;
+      source: string;
     }>("sync_cursor_usage", {
       days: days ?? 30,
       projectId: projectId ?? null,

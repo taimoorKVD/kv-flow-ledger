@@ -80,7 +80,9 @@ export default function App() {
 
   useEffect(() => {
     if (!toast) return;
-    const t = window.setTimeout(() => setToast(null), 2800);
+    // Longer messages (API errors / sync summaries) need more reading time.
+    const ms = toast.length > 80 ? 5200 : 3200;
+    const t = window.setTimeout(() => setToast(null), ms);
     return () => window.clearTimeout(t);
   }, [toast, setToast]);
 
@@ -186,7 +188,7 @@ export default function App() {
       </main>
 
       {toast && (
-        <div className="toast fixed bottom-6 right-6 z-40 rounded-xl border px-4 py-3 text-sm text-white shadow-xl">
+        <div className="toast" role="status" aria-live="polite">
           {toast}
         </div>
       )}

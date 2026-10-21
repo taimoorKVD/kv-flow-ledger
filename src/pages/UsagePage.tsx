@@ -154,9 +154,9 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
           <div>
             <h2 className="text-lg font-bold">Sync from Cursor</h2>
             <p className="tiny mt-1">
-              Pulls billed usage events via Admin API. Conversation ids from hooks map costs onto
-              the selected project; unmatched events are assigned to the current project when one
-              is selected.
+              Pulls billed usage from Cursor (Team Admin API if available, otherwise your Pro/Pro+
+              IDE session). Conversation ids from hooks map costs onto the selected project;
+              unmatched events are assigned to the current project when one is selected.
             </p>
           </div>
           <div className="flex flex-wrap items-end gap-2">

@@ -29,8 +29,9 @@
   --table-rule: #1f342c;
   --progress-track: #243f36;
   --log-line: #2f6b55;
-  --toast-bg: #1a3830;
-  --toast-stroke: #3a6b58;
+  --toast-bg: #1f4a3c;
+  --toast-stroke: #3ecf9a;
+  --toast-ink: #f0faf5;
 }
 
 .light {
@@ -59,8 +60,9 @@
   --table-rule: #d5e8e0;
   --progress-track: #d5e8e0;
   --log-line: #3ecf9a;
-  --toast-bg: #0f9f6e;
-  --toast-stroke: #0d8a5f;
+  --toast-bg: #0d1f1a;
+  --toast-stroke: #0f9f6e;
+  --toast-ink: #f3faf7;
 }
 
 body {
@@ -370,6 +372,38 @@ body {
 }
 
 .toast {
-  border-color: var(--toast-stroke);
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 200;
+  max-width: min(28rem, calc(100vw - 2rem));
+  padding: 0.85rem 1.1rem;
+  border-radius: 12px;
+  border: 1px solid var(--toast-stroke);
   background: var(--toast-bg);
+  color: var(--toast-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  animation: toast-in 0.22s ease-out;
+}
+
+.light .toast {
+  box-shadow: 0 12px 32px rgb(13 31 26 / 22%);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

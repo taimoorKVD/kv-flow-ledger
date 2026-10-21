@@ -35,9 +35,13 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
   const [rateSearch, setRateSearch] = useState("");
   const [ratePage, setRatePage] = useState(1);
   const [cursorApiKey, setCursorApiKey] = useState("");
+  const [cursorSessionToken, setCursorSessionToken] = useState("");
   const [cursorSyncDetail, setCursorSyncDetail] = useState("");
   const [cursorSyncAt, setCursorSyncAt] = useState("");
   const [cursorBusy, setCursorBusy] = useState(false);
+  const [cursorConnected, setCursorConnected] = useState(false);
+  const [cursorAuthError, setCursorAuthError] = useState<string | null>(null);
+  const [cursorSource, setCursorSource] = useState("");
 
   useEffect(() => {
     void (async () => {
@@ -49,6 +53,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
       setReview((s.values.require_attribution_review ?? "false") === "true");
       if (s.values.theme === "light" || s.values.theme === "dark") setTheme(s.values.theme);
       setCursorApiKey(s.values.cursor_api_key ?? "");
+      setCursorSessionToken(s.values.cursor_session_token ?? "");
       setCursorSyncAt(s.values.cursor_usage_last_sync_at ?? "");
       setCursorSyncDetail(s.values.cursor_usage_last_sync_detail ?? "");
       setHooks(await api.hooksStatus());
@@ -108,20 +113,44 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
     await onRefresh();
   }
 
-  async function saveCursorApiKey() {
-    await api.saveSettings({ cursor_api_key: cursorApiKey.trim() });
-    setToast(cursorApiKey.trim() ? "Cursor API key saved" : "Cursor API key cleared");
+  function sanitizeKey(raw: string) {
+    return raw.trim().replace(/^["'`]+|["'`]+$/g, "").replace(/[\s\r\n\t]/g, "");
+  }
+
+  async function saveCursorCredentials() {
+    const key = sanitizeKey(cursorApiKey);
+    const session = cursorSessionToken.trim();
+    setCursorApiKey(key);
+    await api.saveSettings({
+      cursor_api_key: key,
+      cursor_session_token: session,
+    });
+    setCursorConnected(false);
+    setCursorAuthError(null);
+    setCursorSource("");
+    setToast("Cursor credentials saved — click Test connection");
     await onRefresh();
   }
 
   async function testCursorKey() {
     setCursorBusy(true);
+    setCursorAuthError(null);
     try {
-      await api.saveSettings({ cursor_api_key: cursorApiKey.trim() });
+      const key = sanitizeKey(cursorApiKey);
+      setCursorApiKey(key);
+      await api.saveSettings({
+        cursor_api_key: key,
+        cursor_session_token: cursorSessionToken.trim(),
+      });
       const msg = await api.testCursorApiKey();
+      setCursorConnected(true);
+      setCursorSource(msg.includes("dashboard") ? "dashboard_session" : "team_admin_api");
       setToast(msg);
     } catch (e) {
-      setToast(e instanceof Error ? e.message : String(e));
+      setCursorConnected(false);
+      const msg = e instanceof Error ? e.message : String(e);
+      setCursorAuthError(msg);
+      setToast(msg);
     } finally {
       setCursorBusy(false);
     }
@@ -129,15 +158,26 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
 
   async function syncCursorUsage() {
     setCursorBusy(true);
+    setCursorAuthError(null);
     try {
-      await api.saveSettings({ cursor_api_key: cursorApiKey.trim() });
+      const key = sanitizeKey(cursorApiKey);
+      setCursorApiKey(key);
+      await api.saveSettings({
+        cursor_api_key: key,
+        cursor_session_token: cursorSessionToken.trim(),
+      });
       const res = await api.syncCursorUsage(30, null);
       setCursorSyncDetail(res.detail);
       setCursorSyncAt(new Date().toISOString());
+      setCursorConnected(true);
+      setCursorSource(res.source);
       setToast(res.detail);
       await onRefresh();
     } catch (e) {
-      setToast(e instanceof Error ? e.message : String(e));
+      setCursorConnected(false);
+      const msg = e instanceof Error ? e.message : String(e);
+      setCursorAuthError(msg);
+      setToast(msg);
     } finally {
       setCursorBusy(false);
     }
@@ -343,34 +383,66 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
         />
       </div>
 
-      <div className={`panel p-5 ${cursorApiKey.trim() ? "status-ok-panel" : "status-warn-panel"}`}>
+      <div className={`panel p-5 ${cursorConnected ? "status-ok-panel" : "status-warn-panel"}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-bold">Cursor usage &amp; cost API</h2>
+            <h2 className="text-lg font-bold">Cursor usage &amp; cost sync</h2>
             <p className="mt-2 text-sm text-muted">
-              Primary source for AI allocation. Uses the Cursor Admin API (
-              <code>filtered-usage-events</code>) with your dashboard API key — billed{" "}
-              <code>chargedCents</code> and tokens, joined to projects via conversation id from
-              hooks. Teams / Enterprise admin keys from{" "}
-              <code>cursor.com/dashboard → API Keys</code>.
+              On <strong>Pro / Pro+</strong>, FlowLedger reads your signed-in Cursor Desktop
+              session and pulls billed events from the dashboard usage API (same data as the
+              Cursor Usage page). A <code>crsr_</code> user/agent key is optional and will not
+              work on <code>/teams/*</code> — that is expected. Team Admin keys still work when
+              available.
             </p>
           </div>
-          <span className={`status-badge ${cursorApiKey.trim() ? "ok" : "warn"}`}>
-            {cursorApiKey.trim() ? "Key saved" : "Key required"}
+          <span className={`status-badge ${cursorConnected ? "ok" : "warn"}`}>
+            {cursorConnected
+              ? cursorSource.includes("dashboard")
+                ? "Connected (session)"
+                : "Connected (team API)"
+              : "Not verified"}
           </span>
         </div>
         <div className="mt-4 space-y-3">
           <div>
-            <label className="label">Cursor Admin API key</label>
+            <label className="label">Cursor API key (optional — Team Admin or user key)</label>
             <input
               className="field mt-1 font-mono text-xs"
               type="password"
               autoComplete="off"
               value={cursorApiKey}
-              placeholder="crsr_…"
-              onChange={(e) => setCursorApiKey(e.target.value)}
+              placeholder="crsr_… (optional on Pro Plus)"
+              onChange={(e) => {
+                setCursorApiKey(e.target.value);
+                setCursorConnected(false);
+                setCursorAuthError(null);
+              }}
             />
           </div>
+          <div>
+            <label className="label">
+              Session override (optional — only if auto IDE session fails)
+            </label>
+            <input
+              className="field mt-1 font-mono text-xs"
+              type="password"
+              autoComplete="off"
+              value={cursorSessionToken}
+              placeholder="JWT eyJ… or sub::jwt from WorkosCursorSessionToken"
+              onChange={(e) => {
+                setCursorSessionToken(e.target.value);
+                setCursorConnected(false);
+                setCursorAuthError(null);
+              }}
+            />
+            <p className="tiny mt-1">
+              Default path: auto-read <code>cursorAuth/accessToken</code> from the local Cursor
+              IDE. Keep Cursor signed in on this machine.
+            </p>
+          </div>
+          {cursorAuthError && (
+            <div className="soft p-3 text-sm path-bad">{cursorAuthError}</div>
+          )}
           {(cursorSyncAt || cursorSyncDetail) && (
             <div className="soft p-3 text-sm">
               <div className="tiny">Last sync: {cursorSyncAt || "—"}</div>
@@ -381,15 +453,15 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
             <button
               type="button"
               className="btn"
-              disabled={cursorBusy || !cursorApiKey.trim()}
-              onClick={() => void saveCursorApiKey()}
+              disabled={cursorBusy}
+              onClick={() => void saveCursorCredentials()}
             >
-              Save API key
+              Save
             </button>
             <button
               type="button"
               className="btn-ghost"
-              disabled={cursorBusy || !cursorApiKey.trim()}
+              disabled={cursorBusy}
               onClick={() => void testCursorKey()}
             >
               Test connection
@@ -397,7 +469,7 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
             <button
               type="button"
               className="btn-ghost"
-              disabled={cursorBusy || !cursorApiKey.trim()}
+              disabled={cursorBusy}
               onClick={() => void syncCursorUsage()}
             >
               {cursorBusy ? "Syncing…" : "Sync last 30 days"}

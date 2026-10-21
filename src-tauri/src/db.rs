@@ -89,6 +89,7 @@ fn seed_defaults(conn: &mut PooledConn) -> AppResult<()> {
         ("ingest_token", ""),
         ("theme", "dark"),
         ("cursor_api_key", ""),
+        ("cursor_session_token", ""),
         ("cursor_usage_last_sync_at", ""),
         ("cursor_usage_last_sync_detail", ""),
     ];
