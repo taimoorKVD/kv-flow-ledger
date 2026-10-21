@@ -1,13 +1,14 @@
 //! Sync Cursor usage + cost into local `ai_usage_records`.
 //!
-//! Two auth paths (tried in order):
-//! 1. **Team Admin API** — `POST https://api.cursor.com/teams/filtered-usage-events`
-//!    with Basic auth (`crsr_…` Team Admin key).
-//! 2. **Pro / Pro+ dashboard session** — `POST https://cursor.com/api/dashboard/get-filtered-usage-events`
+//! Default path is **this laptop’s signed-in Cursor user** (not team-member rollups):
+//! 1. **Pro / Pro+ dashboard session** — `POST https://cursor.com/api/dashboard/get-filtered-usage-events`
 //!    with `WorkosCursorSessionToken` from the local Cursor IDE login (or a pasted session token).
+//!    Events carry `conversationId`, which we map onto local projects/tasks created by hooks.
+//! 2. **Team Admin API** (fallback) — `POST https://api.cursor.com/teams/filtered-usage-events`
+//!    with Basic auth (`crsr_…` Team Admin key). Used only when no local session is available.
 //!
-//! Personal/user API keys validate on `/v1/me` but return 401 on `/teams/*`. That is expected
-//! on Pro Plus; we automatically fall back to the dashboard session path.
+//! Personal/user/agent API keys (`crsr_…`) validate on `/v1/me` but cannot call `/teams/*` or
+//! return billed usage by themselves. Keep Cursor Desktop signed in on this machine for sync.
 
 use crate::db::Db;
 use crate::error::{AppError, AppResult};
@@ -81,6 +82,9 @@ struct UsageEvent {
     timestamp: Option<serde_json::Value>,
     #[serde(default, rename = "conversationId")]
     conversation_id: Option<String>,
+    /// Some payloads use camelCase alternate keys.
+    #[serde(default, rename = "composerId")]
+    composer_id: Option<String>,
     model: Option<String>,
     kind: Option<String>,
     #[serde(default, rename = "isChargeable")]
@@ -89,6 +93,11 @@ struct UsageEvent {
     charged_cents: Option<f64>,
     #[serde(default, rename = "tokenUsage")]
     token_usage: Option<TokenUsage>,
+    /// Present on Team Admin events — used only if we ever filter team data.
+    #[serde(default, rename = "owningUser")]
+    owning_user: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,8 +120,10 @@ enum AuthMode {
     DashboardSession { cookie: String, user_id: Option<i64> },
 }
 
-/// Pull usage for the last `days` days. Prefers Team Admin API when the key works;
-/// otherwise uses the signed-in Cursor IDE session (Pro / Pro+).
+/// Pull usage for the last `days` days.
+/// Prefers this machine’s Cursor IDE session (local agent/chat work) over Team Admin
+/// member rollups. Events are attributed to projects/tasks via `conversationId` links
+/// written by local hooks — not by team member identity.
 pub fn sync_usage(
     db: &Db,
     days: i64,
@@ -178,9 +189,17 @@ pub fn sync_usage(
         page += 1;
     }
 
+    // Re-link any previously imported rows whose conversation now maps to a local task.
+    let relinked = reattribute_usage_from_conversations(db)?;
+    attributed += relinked;
+
     let now = chrono::Utc::now().to_rfc3339();
+    let scope = match source {
+        "dashboard_session" => "this laptop’s Cursor user",
+        _ => "Team Admin API (fallback)",
+    };
     let detail = format!(
-        "Synced {fetched} events via {source} ({inserted} new, {updated} updated, {attributed} attributed) · {days}d"
+        "Synced {fetched} events via {source} ({scope}) — {inserted} new, {updated} updated, {attributed} linked to local agent/tasks · {days}d"
     );
     settings::set(db, "cursor_usage_last_sync_at", &now)?;
     settings::set(db, "cursor_usage_last_sync_detail", &detail)?;
@@ -279,12 +298,12 @@ pub fn probe_connection(db: &Db) -> AppResult<ProbeResult> {
                     ok: true,
                     source: "dashboard_session".into(),
                     detail: format!(
-                        "Pro dashboard session OK — {} event(s) in last 24h. {}",
+                        "Local Cursor session OK — {} event(s) in last 24h (this laptop’s usage, linked to agent/tasks via conversation ids). {}",
                         resp.total_usage_events_count,
                         if api_key.is_empty() {
                             String::new()
                         } else {
-                            "Your crsr_ key is a user/agent key (not Team Admin); session sync is the correct path for Pro Plus.".into()
+                            "User/agent crsr_ keys cannot fetch usage by themselves; FlowLedger uses your IDE session for local agent/task costs.".into()
                         }
                     ),
                     key_kind,
@@ -309,9 +328,28 @@ pub fn probe_connection(db: &Db) -> AppResult<ProbeResult> {
 }
 
 fn resolve_auth(db: &Db) -> AppResult<AuthMode> {
+    // Prefer local IDE session so usage is this laptop’s agent/chat work, attributed
+    // by conversation → task — not team-wide member spend from Admin API.
+    if let Ok((cookie, user_id)) = resolve_dashboard_session(db) {
+        let end_ms = chrono::Utc::now().timestamp_millis();
+        let start_ms = end_ms - 3_600_000;
+        if fetch_usage_page(
+            &AuthMode::DashboardSession {
+                cookie: cookie.clone(),
+                user_id,
+            },
+            start_ms,
+            end_ms,
+            1,
+        )
+        .is_ok()
+        {
+            return Ok(AuthMode::DashboardSession { cookie, user_id });
+        }
+    }
+
     let api_key = normalize_api_key(&settings::get(db, "cursor_api_key")?.unwrap_or_default());
     if !api_key.is_empty() && api_key.starts_with("crsr_") {
-        // Probe team endpoint lightly — if it works, use it.
         let end_ms = chrono::Utc::now().timestamp_millis();
         let start_ms = end_ms - 3_600_000;
         if fetch_usage_page(
@@ -326,10 +364,14 @@ fn resolve_auth(db: &Db) -> AppResult<AuthMode> {
         {
             return Ok(AuthMode::TeamBasic { api_key });
         }
+        return Err(AppError::Message(
+            "Your crsr_ key is a user/agent key — it cannot fetch billed usage. Sign in to Cursor Desktop on this laptop (or paste a session token) so FlowLedger can sync local agent/task usage.".into(),
+        ));
     }
 
-    let (cookie, user_id) = resolve_dashboard_session(db)?;
-    Ok(AuthMode::DashboardSession { cookie, user_id })
+    Err(AppError::Message(
+        "No Cursor session found on this laptop. Sign in to Cursor Desktop, or paste a WorkosCursorSessionToken under Settings. (User/agent API keys alone cannot pull usage.)".into(),
+    ))
 }
 
 fn resolve_dashboard_session(db: &Db) -> AppResult<(String, Option<i64>)> {
@@ -652,9 +694,12 @@ fn upsert_event(
     let conversation_id = ev
         .conversation_id
         .as_ref()
+        .or(ev.composer_id.as_ref())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let model = ev.model.clone();
+    // Silence unused team-member fields (kept for forward-compatible parse).
+    let _ = (&ev.owning_user, &ev.email);
 
     let input_tokens = ev.token_usage.as_ref().and_then(|t| t.input_tokens);
     let output_tokens = ev.token_usage.as_ref().and_then(|t| t.output_tokens);
@@ -787,6 +832,29 @@ fn lookup_conversation(
             (conversation_id,),
         )?;
         Ok(row.unwrap_or((None, None)))
+    })
+}
+
+/// Attach project/task on usage rows once local hooks have recorded the conversation.
+fn reattribute_usage_from_conversations(db: &Db) -> AppResult<i64> {
+    db.with_conn_mut(|conn| {
+        conn.exec_drop(
+            "UPDATE ai_usage_records u
+             INNER JOIN cursor_conversations c
+               ON c.conversation_id = u.conversation_id
+              AND c.project_id IS NOT NULL
+             SET
+               u.project_id = COALESCE(u.project_id, c.project_id),
+               u.task_id = COALESCE(u.task_id, c.task_id),
+               u.attribution_method = 'conversation_mapping'
+             WHERE IFNULL(u.conversation_id, '') != ''
+               AND (
+                 u.project_id IS NULL
+                 OR (u.task_id IS NULL AND c.task_id IS NOT NULL)
+               )",
+            (),
+        )?;
+        Ok(conn.affected_rows() as i64)
     })
 }
 

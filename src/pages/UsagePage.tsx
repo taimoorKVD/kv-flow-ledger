@@ -144,8 +144,8 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
         </div>
         <div className="panel p-5">
           <span className="label">Data coverage</span>
-          <div className="mt-3 text-xl font-bold amber">Cursor API</div>
-          <p className="tiny mt-2">Sync from Settings API key; hooks link chats to projects</p>
+          <div className="mt-3 text-xl font-bold amber">Local session</div>
+          <p className="tiny mt-2">IDE session sync + hooks link agent chats to projects/tasks</p>
         </div>
       </div>
 
@@ -154,9 +154,9 @@ export default function UsagePage({ onRefresh }: { onRefresh: () => Promise<void
           <div>
             <h2 className="text-lg font-bold">Sync from Cursor</h2>
             <p className="tiny mt-1">
-              Pulls billed usage from Cursor (Team Admin API if available, otherwise your Pro/Pro+
-              IDE session). Conversation ids from hooks map costs onto the selected project;
-              unmatched events are assigned to the current project when one is selected.
+              Pulls this laptop’s billed usage from your Cursor IDE session, then maps each event
+              onto local agent/tasks by conversation id (from hooks). Unmatched events fall back to
+              the selected project. This is not team-member spend — it is work done on this machine.
             </p>
           </div>
           <div className="flex flex-wrap items-end gap-2">

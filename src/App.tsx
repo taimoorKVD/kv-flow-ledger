@@ -2,6 +2,7 @@ import { useCallback, useEffect } from "react";
 import { Plus, ShieldCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import { BrandMark, BrandWordmark } from "@/components/BrandMark";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { pageMeta, useAppStore, type PageId } from "@/stores/appStore";
 import OverviewPage from "@/pages/OverviewPage";
 import ProjectsPage from "@/pages/ProjectsPage";
@@ -145,18 +146,18 @@ export default function App() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="soft flex items-center gap-2 px-3 py-2">
-              <select
-                className="max-w-[190px] bg-transparent text-sm font-semibold outline-none"
+              <SearchableSelect
                 value={selectedProjectId ?? ""}
-                onChange={(e) => setSelectedProjectId(e.target.value || null)}
-              >
-                {projects.length === 0 && <option value="">No projects</option>}
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+                onChange={(id) => setSelectedProjectId(id || null)}
+                options={projects.map((p) => ({
+                  value: p.id,
+                  label: p.name,
+                  hint: p.client || p.workspaces[0] || undefined,
+                }))}
+                placeholder="Select project"
+                emptyLabel="No projects"
+                searchPlaceholder="Search projects…"
+              />
             </div>
             <button
               type="button"

@@ -388,18 +388,18 @@ export default function SettingsPage({ onRefresh }: { onRefresh: () => Promise<v
           <div>
             <h2 className="text-lg font-bold">Cursor usage &amp; cost sync</h2>
             <p className="mt-2 text-sm text-muted">
-              On <strong>Pro / Pro+</strong>, FlowLedger reads your signed-in Cursor Desktop
-              session and pulls billed events from the dashboard usage API (same data as the
-              Cursor Usage page). A <code>crsr_</code> user/agent key is optional and will not
-              work on <code>/teams/*</code> — that is expected. Team Admin keys still work when
-              available.
+              Sync pulls <strong>this laptop’s</strong> Cursor usage (your signed-in IDE session)
+              and links each event to local agent/tasks via conversation ids from hooks — not
+              team-member rollups. A <code>crsr_</code> user/agent key alone cannot fetch billed
+              usage; keep Cursor Desktop signed in. Team Admin keys are a fallback only when no
+              local session is available.
             </p>
           </div>
           <span className={`status-badge ${cursorConnected ? "ok" : "warn"}`}>
             {cursorConnected
               ? cursorSource.includes("dashboard")
-                ? "Connected (session)"
-                : "Connected (team API)"
+                ? "Connected (this laptop)"
+                : "Connected (team fallback)"
               : "Not verified"}
           </span>
         </div>

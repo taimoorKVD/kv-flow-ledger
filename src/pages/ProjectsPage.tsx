@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { FolderOpen, FolderSync, Pencil, Plus, Trash2 } from "lucide-react";
+import { Check, FolderOpen, FolderSync, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { api, type ChildDirectory, type WorkspacePathCheck } from "@/lib/api";
 import { dur, money } from "@/lib/format";
@@ -571,6 +571,16 @@ function SyncLocalFoldersModal({
   const [scanning, setScanning] = useState(false);
   const [creating, setCreating] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{
+    current: number;
+    total: number;
+    name: string;
+    done: number;
+    failed: number;
+  } | null>(null);
+  const [rowStatus, setRowStatus] = useState<
+    Record<string, "pending" | "working" | "ok" | "fail">
+  >({});
 
   const rows = useMemo(
     () =>
@@ -585,6 +595,12 @@ function SyncLocalFoldersModal({
   const selectedCount = selectable.filter((r) => selected.has(r.path)).length;
   const allSelectableChecked =
     selectable.length > 0 && selectable.every((r) => selected.has(r.path));
+
+  function yieldUi() {
+    return new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => window.setTimeout(resolve, 0));
+    });
+  }
 
   async function pickParentFolder() {
     try {
@@ -652,12 +668,35 @@ function SyncLocalFoldersModal({
       return;
     }
     setCreating(true);
+    const initialStatus: Record<string, "pending" | "working" | "ok" | "fail"> = {};
+    for (const folder of toCreate) initialStatus[folder.path] = "pending";
+    setRowStatus(initialStatus);
+    setProgress({
+      current: 0,
+      total: toCreate.length,
+      name: toCreate[0]?.name ?? "",
+      done: 0,
+      failed: 0,
+    });
+    await yieldUi();
+
     const createdIds: string[] = [];
     let failed = 0;
+    let done = 0;
     try {
       const budgetMinor = Math.round(Number(budget || 0) * 100);
       const clientVal = client.trim() || null;
-      for (const folder of toCreate) {
+      for (let i = 0; i < toCreate.length; i++) {
+        const folder = toCreate[i];
+        setProgress({
+          current: i + 1,
+          total: toCreate.length,
+          name: folder.name,
+          done,
+          failed,
+        });
+        setRowStatus((prev) => ({ ...prev, [folder.path]: "working" }));
+        await yieldUi();
         try {
           const created = await api.createProject({
             name: folder.name,
@@ -670,9 +709,20 @@ function SyncLocalFoldersModal({
             workspaces: [folder.path],
           });
           createdIds.push(created.id);
+          done += 1;
+          setRowStatus((prev) => ({ ...prev, [folder.path]: "ok" }));
         } catch {
           failed += 1;
+          setRowStatus((prev) => ({ ...prev, [folder.path]: "fail" }));
         }
+        setProgress({
+          current: i + 1,
+          total: toCreate.length,
+          name: folder.name,
+          done,
+          failed,
+        });
+        await yieldUi();
       }
       if (createdIds.length === 0) {
         setToast(failed ? `Failed to create ${failed} project(s)` : "Nothing created");
@@ -683,11 +733,21 @@ function SyncLocalFoldersModal({
           ? `Created ${createdIds.length} project(s); ${failed} failed`
           : `Created ${createdIds.length} project(s) from local folders`
       );
+      setProgress((p) =>
+        p ? { ...p, name: "Refreshing project list…" } : p
+      );
+      await yieldUi();
       await onDone(createdIds);
     } finally {
       setCreating(false);
+      setProgress(null);
     }
   }
+
+  const busyPct =
+    progress && progress.total > 0
+      ? Math.round(((progress.done + progress.failed) / progress.total) * 100)
+      : 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#030913c9] p-4 backdrop-blur-sm">
@@ -699,7 +759,32 @@ function SyncLocalFoldersModal({
           path as the workspace.
         </p>
 
-        <div className="mt-5 min-h-0 flex-1 space-y-4 overflow-y-auto">
+        {creating && progress && (
+          <div className="soft mt-4 space-y-2 p-3" aria-live="polite">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
+              Creating project {progress.current} of {progress.total}
+            </div>
+            <p className="tiny break-all">
+              {progress.name}
+              {progress.done || progress.failed
+                ? ` · ${progress.done} ok${progress.failed ? `, ${progress.failed} failed` : ""}`
+                : ""}
+            </p>
+            <div className="h-2 overflow-hidden rounded-full bg-black/30">
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-200"
+                style={{
+                  width: `${Math.max(busyPct, progress.current > 0 ? 8 : 0)}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        <div
+          className={`mt-5 min-h-0 flex-1 space-y-4 overflow-y-auto ${creating ? "pointer-events-none opacity-60" : ""}`}
+        >
           <div>
             <label className="label">Parent folder</label>
             <div className="mt-1 flex flex-wrap gap-2">
@@ -707,21 +792,33 @@ function SyncLocalFoldersModal({
                 className="field min-w-[12rem] flex-1"
                 value={parentPath}
                 placeholder="e.g. C:\laragon\www"
+                disabled={creating}
                 onChange={(e) => setParentPath(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void scanFolders();
                 }}
               />
-              <button type="button" className="btn-ghost shrink-0" onClick={() => void pickParentFolder()}>
+              <button
+                type="button"
+                className="btn-ghost shrink-0"
+                disabled={creating}
+                onClick={() => void pickParentFolder()}
+              >
                 <FolderOpen className="h-4 w-4" /> Browse
               </button>
               <button
                 type="button"
                 className="btn shrink-0"
-                disabled={scanning}
+                disabled={scanning || creating}
                 onClick={() => void scanFolders()}
               >
-                {scanning ? "Scanning…" : "Scan folders"}
+                {scanning ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" /> Scanning…
+                  </>
+                ) : (
+                  "Scan folders"
+                )}
               </button>
             </div>
             {scanError && <p className="tiny path-bad mt-1">{scanError}</p>}
@@ -735,7 +832,7 @@ function SyncLocalFoldersModal({
                   <button
                     type="button"
                     className="btn-ghost"
-                    disabled={selectable.length === 0}
+                    disabled={selectable.length === 0 || creating}
                     onClick={() => toggleAll(true)}
                   >
                     Select all
@@ -743,7 +840,7 @@ function SyncLocalFoldersModal({
                   <button
                     type="button"
                     className="btn-ghost"
-                    disabled={selectedCount === 0}
+                    disabled={selectedCount === 0 || creating}
                     onClick={() => toggleAll(false)}
                   >
                     Clear
@@ -755,58 +852,76 @@ function SyncLocalFoldersModal({
                   <input
                     type="checkbox"
                     checked={allSelectableChecked}
-                    disabled={selectable.length === 0}
+                    disabled={selectable.length === 0 || creating}
                     onChange={(e) => toggleAll(e.target.checked)}
                   />
                   Select all available
                 </label>
-                {rows.map((row) => (
-                  <label
-                    key={row.path}
-                    className={`flex items-start gap-2 px-2 py-2 text-sm ${
-                      row.alreadyMapped ? "opacity-50" : "cursor-pointer"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      disabled={row.alreadyMapped}
-                      checked={row.alreadyMapped ? false : selected.has(row.path)}
-                      onChange={(e) => toggleOne(row.path, e.target.checked)}
-                    />
-                    <span className="min-w-0">
-                      <span className="font-semibold">{row.name}</span>
-                      <span className="tiny mt-0.5 block break-all">{row.path}</span>
-                      {row.alreadyMapped && (
-                        <span className="tiny mt-0.5 block">Already mapped to a project</span>
-                      )}
-                    </span>
-                  </label>
-                ))}
+                {rows.map((row) => {
+                  const st = rowStatus[row.path];
+                  return (
+                    <label
+                      key={row.path}
+                      className={`flex items-start gap-2 px-2 py-2 text-sm ${
+                        row.alreadyMapped || creating ? "opacity-50" : "cursor-pointer"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        disabled={row.alreadyMapped || creating}
+                        checked={row.alreadyMapped ? false : selected.has(row.path)}
+                        onChange={(e) => toggleOne(row.path, e.target.checked)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2 font-semibold">
+                          {row.name}
+                          {st === "working" && (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                          )}
+                          {st === "ok" && <Check className="h-3.5 w-3.5 path-ok" />}
+                          {st === "fail" && <X className="h-3.5 w-3.5 path-bad" />}
+                        </span>
+                        <span className="tiny mt-0.5 block break-all">{row.path}</span>
+                        {row.alreadyMapped && (
+                          <span className="tiny mt-0.5 block">Already mapped to a project</span>
+                        )}
+                        {st === "working" && (
+                          <span className="tiny mt-0.5 block">Creating project…</span>
+                        )}
+                        {st === "fail" && (
+                          <span className="tiny path-bad mt-0.5 block">Create failed</span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
             </div>
           )}
 
-          <Field label="Client (applied to all)" value={client} onChange={setClient} />
-          <div>
-            <label className="label">Currency</label>
-            <select
-              className="field mt-1"
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value)}
-            >
-              {currencies.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.code} — {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <Field
-            label={`Total payment / budget (${currency}, applied to all)`}
-            value={budget}
-            onChange={setBudget}
-          />
+          <fieldset disabled={creating} className="space-y-4 border-0 p-0">
+            <Field label="Client (applied to all)" value={client} onChange={setClient} />
+            <div>
+              <label className="label">Currency</label>
+              <select
+                className="field mt-1"
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+              >
+                {currencies.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.code} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Field
+              label={`Total payment / budget (${currency}, applied to all)`}
+              value={budget}
+              onChange={setBudget}
+            />
+          </fieldset>
         </div>
 
         <div className="mt-6 flex justify-end gap-2">
@@ -819,9 +934,14 @@ function SyncLocalFoldersModal({
             disabled={creating || selectedCount === 0}
             onClick={() => void createSelected()}
           >
-            {creating
-              ? "Creating…"
-              : `Create ${selectedCount || ""} project${selectedCount === 1 ? "" : "s"}`.trim()}
+            {creating && progress ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {progress.current}/{progress.total}…
+              </>
+            ) : (
+              `Create ${selectedCount || ""} project${selectedCount === 1 ? "" : "s"}`.trim()
+            )}
           </button>
         </div>
       </div>
