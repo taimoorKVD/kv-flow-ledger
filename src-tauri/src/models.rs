@@ -177,6 +177,12 @@ pub struct UnassignedPage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildDirectory {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFinanceUpdate {
     /// Total contracted / agreed payment for the project.
     pub contracted_budget_minor: i64,

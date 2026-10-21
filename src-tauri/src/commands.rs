@@ -173,6 +173,46 @@ pub fn validate_workspace_path(path: String) -> serde_json::Value {
     })
 }
 
+/// Immediate child folders under a parent path (for bulk local project sync).
+#[tauri::command]
+pub fn list_child_directories(path: String) -> AppResult<Vec<ChildDirectory>> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err(crate::error::AppError::Message(
+            "Enter or choose a parent folder path".into(),
+        ));
+    }
+    let normalized = crate::services::projects::normalize_path(trimmed);
+    let parent = std::path::Path::new(&normalized);
+    if !parent.exists() {
+        return Err(crate::error::AppError::Message(
+            "Path not found on this machine".into(),
+        ));
+    }
+    if !parent.is_dir() {
+        return Err(crate::error::AppError::Message(
+            "Path exists but is not a folder".into(),
+        ));
+    }
+    let mut children = Vec::new();
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        let meta = entry.metadata()?;
+        if !meta.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let abs = entry.path().to_string_lossy().to_string();
+        let path = crate::services::projects::normalize_path(&abs);
+        children.push(ChildDirectory { name, path });
+    }
+    children.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(children)
+}
+
 #[tauri::command]
 pub fn add_usage_record(
     state: State<'_, AppState>,

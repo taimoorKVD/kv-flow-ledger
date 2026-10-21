@@ -24,6 +24,11 @@ export type WorkspacePathCheck = {
   detail: string;
 };
 
+export type ChildDirectory = {
+  name: string;
+  path: string;
+};
+
 export type Task = {
   id: string;
   project_id: string;
@@ -144,6 +149,8 @@ export const api = {
   ) => call<void>("update_project_finances", { projectId, update }),
   validateWorkspacePath: (path: string) =>
     call<WorkspacePathCheck>("validate_workspace_path", { path }),
+  listChildDirectories: (path: string) =>
+    call<ChildDirectory[]>("list_child_directories", { path }),
   listCurrencies: () =>
     call<Array<{ code: string; name: string; symbol: string }>>("list_currencies"),
   listExchangeRates: () =>

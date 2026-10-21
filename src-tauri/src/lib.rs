@@ -77,6 +77,7 @@ pub fn run() {
             commands::dismiss_noise_unassigned,
             commands::assign_unassigned,
             commands::validate_workspace_path,
+            commands::list_child_directories,
             commands::add_usage_record,
             commands::import_usage_csv,
             commands::sync_cursor_usage,

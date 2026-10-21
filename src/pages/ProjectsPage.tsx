@@ -1,10 +1,14 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { FolderOpen, Pencil, Plus, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { FolderOpen, FolderSync, Pencil, Plus, Trash2 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { api, type WorkspacePathCheck } from "@/lib/api";
+import { api, type ChildDirectory, type WorkspacePathCheck } from "@/lib/api";
 import { dur, money } from "@/lib/format";
 import { FilterBar, PaginationBar, useClientPage } from "@/components/ListControls";
 import { useAppStore } from "@/stores/appStore";
+
+function pathKey(path: string) {
+  return path.trim().replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
 
 const TASK_PAGE_SIZE = 10;
 
@@ -16,6 +20,7 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   const setToast = useAppStore((s) => s.setToast);
 
   const [showProject, setShowProject] = useState(false);
+  const [showSyncLocal, setShowSyncLocal] = useState(false);
   const [editingProject, setEditingProject] = useState(false);
   const [pName, setPName] = useState("");
   const [pClient, setPClient] = useState("");
@@ -244,6 +249,9 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
       <div className="flex flex-wrap gap-2">
         <button type="button" className="btn" onClick={openCreateModal}>
           <Plus className="h-4 w-4" /> New project
+        </button>
+        <button type="button" className="btn-ghost" onClick={() => setShowSyncLocal(true)}>
+          <FolderSync className="h-4 w-4" /> Sync local folders
         </button>
         <button
           type="button"
@@ -523,7 +531,301 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
           <Field label={`Total payment (${pCurrency})`} value={pBudget} onChange={setPBudget} />
         </Modal>
       )}
+
+      {showSyncLocal && (
+        <SyncLocalFoldersModal
+          currencies={currencies}
+          existingWorkspaceKeys={new Set(
+            projects.flatMap((p) => p.workspaces.map((w) => pathKey(w)))
+          )}
+          onClose={() => setShowSyncLocal(false)}
+          onDone={async (createdIds) => {
+            setShowSyncLocal(false);
+            await onRefresh();
+            if (createdIds[0]) setSelectedProjectId(createdIds[0]);
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+function SyncLocalFoldersModal({
+  currencies,
+  existingWorkspaceKeys,
+  onClose,
+  onDone,
+}: {
+  currencies: Array<{ code: string; name: string; symbol: string }>;
+  existingWorkspaceKeys: Set<string>;
+  onClose: () => void;
+  onDone: (createdIds: string[]) => Promise<void>;
+}) {
+  const setToast = useAppStore((s) => s.setToast);
+  const [parentPath, setParentPath] = useState("");
+  const [children, setChildren] = useState<ChildDirectory[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [client, setClient] = useState("");
+  const [budget, setBudget] = useState("0");
+  const [currency, setCurrency] = useState("USD");
+  const [scanning, setScanning] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+
+  const rows = useMemo(
+    () =>
+      children.map((c) => ({
+        ...c,
+        alreadyMapped: existingWorkspaceKeys.has(pathKey(c.path)),
+      })),
+    [children, existingWorkspaceKeys]
+  );
+
+  const selectable = rows.filter((r) => !r.alreadyMapped);
+  const selectedCount = selectable.filter((r) => selected.has(r.path)).length;
+  const allSelectableChecked =
+    selectable.length > 0 && selectable.every((r) => selected.has(r.path));
+
+  async function pickParentFolder() {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Select parent folder with project directories",
+      });
+      if (typeof picked === "string" && picked) {
+        setParentPath(picked);
+      }
+    } catch {
+      setToast("Folder picker unavailable — paste an absolute path");
+    }
+  }
+
+  async function scanFolders() {
+    if (!parentPath.trim()) {
+      setToast("Enter or browse to a parent folder");
+      return;
+    }
+    setScanning(true);
+    setScanError(null);
+    try {
+      const list = await api.listChildDirectories(parentPath.trim());
+      setChildren(list);
+      const next = new Set<string>();
+      for (const c of list) {
+        if (!existingWorkspaceKeys.has(pathKey(c.path))) next.add(c.path);
+      }
+      setSelected(next);
+      if (list.length === 0) {
+        setToast("No subfolders found in that directory");
+      }
+    } catch (e) {
+      setChildren([]);
+      setSelected(new Set());
+      setScanError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  function toggleAll(checked: boolean) {
+    if (!checked) {
+      setSelected(new Set());
+      return;
+    }
+    setSelected(new Set(selectable.map((r) => r.path)));
+  }
+
+  function toggleOne(path: string, checked: boolean) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }
+
+  async function createSelected() {
+    const toCreate = selectable.filter((r) => selected.has(r.path));
+    if (toCreate.length === 0) {
+      setToast("Select at least one folder");
+      return;
+    }
+    setCreating(true);
+    const createdIds: string[] = [];
+    let failed = 0;
+    try {
+      const budgetMinor = Math.round(Number(budget || 0) * 100);
+      const clientVal = client.trim() || null;
+      for (const folder of toCreate) {
+        try {
+          const created = await api.createProject({
+            name: folder.name,
+            client: clientVal,
+            description: null,
+            git_repository: null,
+            billing_model: "fixed_price",
+            contracted_budget_minor: budgetMinor,
+            currency,
+            workspaces: [folder.path],
+          });
+          createdIds.push(created.id);
+        } catch {
+          failed += 1;
+        }
+      }
+      if (createdIds.length === 0) {
+        setToast(failed ? `Failed to create ${failed} project(s)` : "Nothing created");
+        return;
+      }
+      setToast(
+        failed
+          ? `Created ${createdIds.length} project(s); ${failed} failed`
+          : `Created ${createdIds.length} project(s) from local folders`
+      );
+      await onDone(createdIds);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#030913c9] p-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[90vh] w-full max-w-2xl flex-col p-6 shadow-2xl">
+        <h2 className="text-lg font-bold">Sync local folders</h2>
+        <p className="tiny mt-1">
+          Pick a parent directory, choose which subfolders become projects, then set a shared
+          client and budget. Each selected folder is created as its own project with that absolute
+          path as the workspace.
+        </p>
+
+        <div className="mt-5 min-h-0 flex-1 space-y-4 overflow-y-auto">
+          <div>
+            <label className="label">Parent folder</label>
+            <div className="mt-1 flex flex-wrap gap-2">
+              <input
+                className="field min-w-[12rem] flex-1"
+                value={parentPath}
+                placeholder="e.g. C:\laragon\www"
+                onChange={(e) => setParentPath(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void scanFolders();
+                }}
+              />
+              <button type="button" className="btn-ghost shrink-0" onClick={() => void pickParentFolder()}>
+                <FolderOpen className="h-4 w-4" /> Browse
+              </button>
+              <button
+                type="button"
+                className="btn shrink-0"
+                disabled={scanning}
+                onClick={() => void scanFolders()}
+              >
+                {scanning ? "Scanning…" : "Scan folders"}
+              </button>
+            </div>
+            {scanError && <p className="tiny path-bad mt-1">{scanError}</p>}
+          </div>
+
+          {rows.length > 0 && (
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="label">Folders to sync ({selectedCount} selected)</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    disabled={selectable.length === 0}
+                    onClick={() => toggleAll(true)}
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    disabled={selectedCount === 0}
+                    onClick={() => toggleAll(false)}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div className="soft mt-2 max-h-56 overflow-y-auto p-2">
+                <label className="flex cursor-pointer items-center gap-2 border-b border-white/5 px-2 py-2 text-sm font-semibold">
+                  <input
+                    type="checkbox"
+                    checked={allSelectableChecked}
+                    disabled={selectable.length === 0}
+                    onChange={(e) => toggleAll(e.target.checked)}
+                  />
+                  Select all available
+                </label>
+                {rows.map((row) => (
+                  <label
+                    key={row.path}
+                    className={`flex items-start gap-2 px-2 py-2 text-sm ${
+                      row.alreadyMapped ? "opacity-50" : "cursor-pointer"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      disabled={row.alreadyMapped}
+                      checked={row.alreadyMapped ? false : selected.has(row.path)}
+                      onChange={(e) => toggleOne(row.path, e.target.checked)}
+                    />
+                    <span className="min-w-0">
+                      <span className="font-semibold">{row.name}</span>
+                      <span className="tiny mt-0.5 block break-all">{row.path}</span>
+                      {row.alreadyMapped && (
+                        <span className="tiny mt-0.5 block">Already mapped to a project</span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <Field label="Client (applied to all)" value={client} onChange={setClient} />
+          <div>
+            <label className="label">Currency</label>
+            <select
+              className="field mt-1"
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value)}
+            >
+              {currencies.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.code} — {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Field
+            label={`Total payment / budget (${currency}, applied to all)`}
+            value={budget}
+            onChange={setBudget}
+          />
+        </div>
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button type="button" className="btn-ghost" disabled={creating} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={creating || selectedCount === 0}
+            onClick={() => void createSelected()}
+          >
+            {creating
+              ? "Creating…"
+              : `Create ${selectedCount || ""} project${selectedCount === 1 ? "" : "s"}`.trim()}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
