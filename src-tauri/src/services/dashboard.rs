@@ -75,7 +75,8 @@ pub fn summary(db: &Db, project_id: Option<&str>, ingest_listening: bool) -> App
         ai_minor,
         other_minor: other + sub,
         recognized_revenue_minor: recognized,
-        profit_minor: fin.economic_profit_minor,
+        // Primary P/L when contracted payment is set; None → UI shows N/A.
+        profit_minor: fin.contract_profit_minor,
         currency,
         active_projects,
         active_tasks,
@@ -101,16 +102,28 @@ fn project_work_ms(
     db: &Db,
     project_id: Option<&str>,
 ) -> AppResult<crate::time_engine::TimeBreakdown> {
+    let now = Utc::now().to_rfc3339();
     db.with_conn(|conn| {
+        // Open intervals must use NOW as end — COALESCE(ended_at, started_at) made live
+        // work appear as 0h 0m ("Editor active" with no duration).
+        // Also include intervals linked by conversation even if project_id was never stamped.
         let rows: Vec<(String, String, String)> = if let Some(pid) = project_id {
             conn.exec(
-                "SELECT kind, started_at, COALESCE(ended_at, started_at) FROM activity_intervals
-                 WHERE project_id = ? OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)",
-                (pid, pid),
+                "SELECT kind, started_at, COALESCE(ended_at, ?) FROM activity_intervals
+                 WHERE project_id = ?
+                    OR task_id IN (SELECT id FROM tasks WHERE project_id = ?)
+                    OR (
+                         IFNULL(conversation_id,'') <> ''
+                         AND conversation_id IN (
+                           SELECT conversation_id FROM cursor_conversations WHERE project_id = ?
+                         )
+                       )",
+                (&now, pid, pid, pid),
             )?
         } else {
-            conn.query(
-                "SELECT kind, started_at, COALESCE(ended_at, started_at) FROM activity_intervals",
+            conn.exec(
+                "SELECT kind, started_at, COALESCE(ended_at, ?) FROM activity_intervals",
+                (&now,),
             )?
         };
         let mut intervals = Vec::new();
@@ -277,12 +290,21 @@ fn live_tracking(
             "SELECT task_id, conversation_id FROM activity_intervals
              WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
         )?;
-        Ok((
-            row.as_ref().and_then(|r| r.0.clone()),
-            row.as_ref().and_then(|r| r.1.clone()),
-            mode,
-            last_event_at,
-        ))
+        let mut task_id = row.as_ref().and_then(|r| r.0.clone());
+        let conversation_id = row.as_ref().and_then(|r| r.1.clone());
+        // Recover linked task from conversation when the open interval was never stamped.
+        if task_id.is_none() {
+            if let Some(cid) = conversation_id.as_deref() {
+                let linked: Option<String> = conn.exec_first(
+                    "SELECT task_id FROM cursor_conversations
+                     WHERE conversation_id = ? AND task_id IS NOT NULL
+                     LIMIT 1",
+                    (cid,),
+                )?;
+                task_id = linked;
+            }
+        }
+        Ok((task_id, conversation_id, mode, last_event_at))
     })
 }
 

@@ -150,9 +150,12 @@ pub fn list_unassigned_page(
         let mut params_vec: Vec<mysql::Value> = Vec::new();
 
         if let Some(pid) = &project_id {
-            // Project-scoped review queue:
-            // 1) unknown / unmapped workspaces (candidates to assign TO this project)
-            // 2) rows already linked by conversation or mapped workspace for this project
+            // Project-scoped review ONLY — never dump every unknown_workspace into every project.
+            // Include:
+            // 1) rows whose conversation is already linked to this project
+            // 2) rows whose workspace path matches THIS project's mapped folders
+            // Exclude:
+            // - paths mapped to any other project (e.g. flowledger must not appear under serenity)
             let ws_paths: Vec<String> = conn.exec_map(
                 "SELECT path FROM project_workspaces WHERE project_id = ?",
                 (pid,),
@@ -165,15 +168,25 @@ pub fn list_unassigned_page(
             variants.sort();
             variants.dedup();
 
+            let other_paths: Vec<String> = conn.exec_map(
+                "SELECT path FROM project_workspaces WHERE project_id <> ?",
+                (pid,),
+                |p: String| p,
+            )?;
+            let mut other_variants: Vec<String> = Vec::new();
+            for path in &other_paths {
+                other_variants.extend(workspace_match_variants(path));
+            }
+            other_variants.sort();
+            other_variants.dedup();
+
             where_sql.push_str(" AND (");
             where_sql.push_str(
-                "reason IN ('unknown_workspace', 'ambiguous_workspace', 'needs_review')",
-            );
-            where_sql.push_str(
-                " OR EXISTS (
+                "EXISTS (
                    SELECT 1 FROM cursor_conversations cc
                    WHERE cc.project_id = ?
                      AND cc.conversation_id = unassigned_activity.conversation_id
+                     AND IFNULL(unassigned_activity.conversation_id,'') <> ''
                  )",
             );
             params_vec.push(pid.clone().into());
@@ -190,8 +203,29 @@ pub fn list_unassigned_page(
                 for v in &variants {
                     params_vec.push(v.to_ascii_lowercase().into());
                 }
+            } else {
+                // No mapped workspaces yet — only conversation-linked rows (already in clause).
             }
             where_sql.push(')');
+
+            // Hard exclude other projects' workspace folders.
+            if !other_variants.is_empty() {
+                where_sql.push_str(
+                    " AND (
+                       IFNULL(workspace_path,'') = ''
+                       OR LOWER(workspace_path) NOT IN (",
+                );
+                for (i, _) in other_variants.iter().enumerate() {
+                    if i > 0 {
+                        where_sql.push(',');
+                    }
+                    where_sql.push('?');
+                }
+                where_sql.push_str("))");
+                for v in &other_variants {
+                    params_vec.push(v.to_ascii_lowercase().into());
+                }
+            }
         }
 
         if let Some(reason) = &reason_filter {

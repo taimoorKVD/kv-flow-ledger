@@ -103,7 +103,8 @@ pub struct DashboardSummary {
     pub ai_minor: i64,
     pub other_minor: i64,
     pub recognized_revenue_minor: i64,
-    pub profit_minor: i64,
+    /// Contract P/L when contracted payment is set; null means N/A.
+    pub profit_minor: Option<i64>,
     pub currency: String,
     pub active_projects: i64,
     pub active_tasks: i64,

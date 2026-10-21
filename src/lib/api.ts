@@ -54,7 +54,8 @@ export type DashboardSummary = {
   ai_minor: number;
   other_minor: number;
   recognized_revenue_minor: number;
-  profit_minor: number;
+  /** null when contracted payment is not set (P/L is N/A). */
+  profit_minor?: number | null;
   currency: string;
   active_projects: number;
   active_tasks: number;
@@ -106,10 +107,15 @@ export type ProjectFinancials = {
   other_expenses_minor: number;
   subscription_allocation_minor: number;
   total_cost_minor: number;
+  /** Contracted payment − expenses; null when no contracted payment is set. */
+  contract_profit_minor?: number | null;
+  contract_margin_pct?: number | null;
+  ai_of_contract_pct?: number | null;
+  labor_of_contract_pct?: number | null;
   economic_profit_minor: number;
   cash_flow_minor: number;
   profit_margin_pct?: number | null;
-  budget_remaining_minor: number;
+  budget_remaining_minor?: number | null;
   cost_per_work_hour_minor?: number | null;
   hours_until_budget?: number | null;
 };

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   Check,
@@ -22,6 +22,21 @@ function pathKey(path: string) {
   return path.trim().replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
 }
 
+function minorToInput(minor: number) {
+  if (!Number.isFinite(minor)) return "0";
+  const n = minor / 100;
+  return Number.isInteger(n) ? String(n) : String(n);
+}
+
+/** Parse a money field into minor units; null if invalid. */
+function parseMoneyToMinor(raw: string): number | null {
+  const t = raw.trim();
+  if (t === "") return 0;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * 100);
+}
+
 const TASK_PAGE_SIZE = 10;
 
 export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<void> }) {
@@ -40,6 +55,8 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
   const [librarySearch, setLibrarySearch] = useState("");
   const [clearingWorkspaces, setClearingWorkspaces] = useState(false);
   const [syncingTasks, setSyncingTasks] = useState(false);
+  /** Prevents the 5s project refresh from wiping in-progress finance edits. */
+  const financesDirtyRef = useRef(false);
   const [pName, setPName] = useState("");
   const [pClient, setPClient] = useState("");
   const [pWorkspace, setPWorkspace] = useState("");
@@ -91,8 +108,32 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
     });
   }, []);
 
+  function applyFinancialsForm(fin: {
+    contracted_budget_minor: number;
+    recognized_revenue_minor: number;
+    payments_received_minor: number;
+    other_expenses_minor: number;
+    labor_cost_minor: number;
+    currency: string;
+  }, laborOverrideMinor?: number | null) {
+    setProjCurrency(fin.currency || "USD");
+    setBudget(minorToInput(fin.contracted_budget_minor));
+    setRevenue(minorToInput(fin.recognized_revenue_minor));
+    setReceived(minorToInput(fin.payments_received_minor));
+    setOther(
+      fin.other_expenses_minor > 0 ? minorToInput(fin.other_expenses_minor) : ""
+    );
+    setComputedLabor(fin.labor_cost_minor);
+    if (laborOverrideMinor != null && laborOverrideMinor > 0) {
+      setLaborRate(minorToInput(laborOverrideMinor));
+    } else if (laborOverrideMinor === null) {
+      setLaborRate("");
+    }
+  }
+
   useEffect(() => {
-    if (!project || !selectedProjectId) {
+    financesDirtyRef.current = false;
+    if (!selectedProjectId) {
       setBudget("");
       setRevenue("");
       setReceived("");
@@ -101,31 +142,39 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
       setComputedLabor(0);
       return;
     }
-    setProjCurrency(project.currency || "USD");
-    setBudget(String(project.contracted_budget_minor / 100));
-    setLaborRate(
-      project.labor_rate_override_minor != null && project.labor_rate_override_minor > 0
-        ? String(project.labor_rate_override_minor / 100)
-        : ""
-    );
+    const p = projects.find((x) => x.id === selectedProjectId);
+    if (p) {
+      setProjCurrency(p.currency || "USD");
+      setBudget(minorToInput(p.contracted_budget_minor));
+      setLaborRate(
+        p.labor_rate_override_minor != null && p.labor_rate_override_minor > 0
+          ? minorToInput(p.labor_rate_override_minor)
+          : ""
+      );
+    }
+    const projectId = selectedProjectId;
     void api
-      .getProjectFinancials(selectedProjectId)
+      .getProjectFinancials(projectId)
       .then((fin) => {
-        setBudget(String(fin.contracted_budget_minor / 100));
-        setRevenue(String(fin.recognized_revenue_minor / 100));
-        setReceived(String(fin.payments_received_minor / 100));
-        setOther(
-          fin.other_expenses_minor > 0 ? String(fin.other_expenses_minor / 100) : ""
+        // Ignore late responses if the user already started editing or switched project.
+        if (financesDirtyRef.current) return;
+        if (useAppStore.getState().selectedProjectId !== projectId) return;
+        const current = useAppStore.getState().projects.find((x) => x.id === projectId);
+        applyFinancialsForm(
+          fin,
+          current?.labor_rate_override_minor ?? null
         );
-        setComputedLabor(fin.labor_cost_minor);
       })
       .catch(() => {
+        if (financesDirtyRef.current) return;
         setRevenue("");
         setReceived("");
         setOther("");
         setComputedLabor(0);
       });
-  }, [project, selectedProjectId]);
+    // Only reload when the selected project changes — not on every 5s projects refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectId]);
 
   useEffect(() => {
     if (!pWorkspace.trim()) {
@@ -293,24 +342,53 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
     });
   }, [projects, librarySearch]);
 
+  function markFinancesDirty(setter: (v: string) => void) {
+    return (v: string) => {
+      financesDirtyRef.current = true;
+      setter(v);
+    };
+  }
+
   async function saveFinances() {
     if (!selectedProjectId) return;
+    const budgetMinor = parseMoneyToMinor(budget);
+    const revenueMinor = parseMoneyToMinor(revenue);
+    const receivedMinor = parseMoneyToMinor(received);
+    const otherMinor = parseMoneyToMinor(other);
+    if (
+      budgetMinor == null ||
+      revenueMinor == null ||
+      receivedMinor == null ||
+      otherMinor == null
+    ) {
+      setToast("Enter valid amounts for payment / revenue fields");
+      return;
+    }
     const laborOverride =
       laborRate.trim() === "" || Number(laborRate) <= 0
         ? null
         : Math.round(Number(laborRate) * 100);
-    await api.updateProjectFinances(selectedProjectId, {
-      contracted_budget_minor: Math.round(Number(budget || 0) * 100),
-      recognized_revenue_minor: Math.round(Number(revenue || 0) * 100),
-      payments_received_minor: Math.round(Number(received || 0) * 100),
-      other_expenses_minor: Math.round(Number(other || 0) * 100),
-      labor_rate_override_minor: laborOverride,
-      currency: projCurrency,
-    });
-    setToast(`Project finances saved in ${projCurrency}`);
-    await onRefresh();
-    const fin = await api.getProjectFinancials(selectedProjectId);
-    setComputedLabor(fin.labor_cost_minor);
+    if (laborRate.trim() !== "" && (laborOverride == null || Number.isNaN(laborOverride))) {
+      setToast("Enter a valid labor rate or leave it blank");
+      return;
+    }
+    try {
+      await api.updateProjectFinances(selectedProjectId, {
+        contracted_budget_minor: budgetMinor,
+        recognized_revenue_minor: revenueMinor,
+        payments_received_minor: receivedMinor,
+        other_expenses_minor: otherMinor,
+        labor_rate_override_minor: laborOverride,
+        currency: projCurrency,
+      });
+      financesDirtyRef.current = false;
+      setToast(`Project finances saved in ${projCurrency}`);
+      await onRefresh();
+      const fin = await api.getProjectFinancials(selectedProjectId);
+      applyFinancialsForm(fin, laborOverride);
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : String(e));
+    }
   }
 
   async function saveTaskTitle(taskId: string) {
@@ -687,7 +765,10 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
                 <select
                   className="field mt-1"
                   value={projCurrency}
-                  onChange={(e) => setProjCurrency(e.target.value)}
+                  onChange={(e) => {
+                    financesDirtyRef.current = true;
+                    setProjCurrency(e.target.value);
+                  }}
                 >
                   {currencies.map((c) => (
                     <option key={c.code} value={c.code}>
@@ -699,19 +780,19 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
               <Field
                 label={`Total payment / contracted (${ccy})`}
                 value={budget}
-                onChange={setBudget}
+                onChange={markFinancesDirty(setBudget)}
                 placeholder="0"
               />
               <Field
                 label={`Recognized revenue (${ccy})`}
                 value={revenue}
-                onChange={setRevenue}
+                onChange={markFinancesDirty(setRevenue)}
                 placeholder="0"
               />
               <Field
                 label={`Received payment (${ccy})`}
                 value={received}
-                onChange={setReceived}
+                onChange={markFinancesDirty(setReceived)}
                 placeholder="0"
               />
               <div>
@@ -725,7 +806,7 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
                   step="0.01"
                   value={laborRate}
                   placeholder="Use Settings salary rate"
-                  onChange={(e) => setLaborRate(e.target.value)}
+                  onChange={(e) => markFinancesDirty(setLaborRate)(e.target.value)}
                 />
                 <p className="tiny mt-1">
                   Computed labor for tracked time:{" "}
@@ -735,7 +816,7 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
               <Field
                 label={`Other expenses (${ccy}, optional)`}
                 value={other}
-                onChange={setOther}
+                onChange={markFinancesDirty(setOther)}
                 placeholder="Leave blank if none"
               />
               <button type="button" className="btn w-full" onClick={() => void saveFinances()}>
@@ -755,8 +836,9 @@ export default function ProjectsPage({ onRefresh }: { onRefresh: () => Promise<v
             <div>
               <h2 className="font-bold">Attribution policy · {project.name}</h2>
               <p className="tiny mt-1">
-                Org / client: {project.client?.trim() ? project.client : "—"} · This review applies
-                only to this project, not the whole library.
+                Org / client: {project.client?.trim() ? project.client : "—"} · Only activity for{" "}
+                <strong>{project.name}</strong> (its mapped workspaces / linked chats). Other
+                projects such as FlowLedger never appear here.
               </p>
               <p className="mt-2 text-sm text-muted">
                 Assigning maps a workspace folder onto <strong>{project.name}</strong> and creates a

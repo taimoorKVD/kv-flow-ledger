@@ -39,13 +39,24 @@ pub struct ProjectFinancials {
     pub ai_cost_minor: i64,
     pub other_expenses_minor: i64,
     pub subscription_allocation_minor: i64,
+    /// Labor + AI allocation + other + subscription (all treated as project expenses).
     pub total_cost_minor: i64,
-    /// Economic profit = recognized revenue − total cost (includes labor valuation).
+    /// Primary P/L: contracted payment − all expenses. None when no contracted payment is set.
+    pub contract_profit_minor: Option<i64>,
+    /// Contract margin % = contract_profit / contracted payment.
+    pub contract_margin_pct: Option<f64>,
+    /// AI share of contracted payment (0–100+).
+    pub ai_of_contract_pct: Option<f64>,
+    /// Labor share of contracted payment (0–100+).
+    pub labor_of_contract_pct: Option<f64>,
+    /// Recognized revenue − total expenses (secondary; useful when revenue is booked separately).
     pub economic_profit_minor: i64,
-    /// Cash flow = payments received − cash expenses (excludes imputed labor).
+    /// Payments received − all expenses (labor included as expense).
     pub cash_flow_minor: i64,
+    /// Alias of contract_margin_pct when a contract exists; else revenue margin.
     pub profit_margin_pct: Option<f64>,
-    pub budget_remaining_minor: i64,
+    /// Contracted payment still available after all expenses. None when no contract is set.
+    pub budget_remaining_minor: Option<i64>,
     pub cost_per_work_hour_minor: Option<i64>,
     pub hours_until_budget: Option<f64>,
 }
@@ -70,31 +81,48 @@ pub fn compute_project_financials(
     subscription_allocation_minor: i64,
     combined_work_ms: i64,
 ) -> ProjectFinancials {
+    // Expenses always accumulate (labor + AI + other), even with no contracted payment.
     let total_cost_minor = project_cost(
         labor_cost_minor,
         ai_cost_minor,
         other_expenses_minor,
         subscription_allocation_minor,
     );
-    let economic_profit_minor = recognized_revenue_minor - total_cost_minor;
-    let cash_expenses = ai_cost_minor + other_expenses_minor + subscription_allocation_minor;
-    let cash_flow_minor = payments_received_minor - cash_expenses;
-    let profit_margin_pct = if recognized_revenue_minor > 0 {
-        Some((economic_profit_minor as f64 / recognized_revenue_minor as f64) * 100.0)
+    // P/L only when a contracted payment exists — otherwise N/A (not a fake loss).
+    let contract_profit_minor = if contracted_budget_minor > 0 {
+        Some(contracted_budget_minor - total_cost_minor)
     } else {
         None
     };
+    let economic_profit_minor = recognized_revenue_minor - total_cost_minor;
+    let cash_flow_minor = payments_received_minor - total_cost_minor;
+
+    let contract_margin_pct = contract_profit_minor.map(|p| {
+        (p as f64 / contracted_budget_minor as f64) * 100.0
+    });
+    let ai_of_contract_pct = if contracted_budget_minor > 0 {
+        Some((ai_cost_minor as f64 / contracted_budget_minor as f64) * 100.0)
+    } else {
+        None
+    };
+    let labor_of_contract_pct = if contracted_budget_minor > 0 {
+        Some((labor_cost_minor as f64 / contracted_budget_minor as f64) * 100.0)
+    } else {
+        None
+    };
+    // Prefer contract margin only — no contracted payment means P/L is N/A.
+    let profit_margin_pct = contract_margin_pct;
+
     let work_hours = combined_work_ms as f64 / 3_600_000.0;
     let cost_per_work_hour_minor = if work_hours > 0.0 {
         Some((total_cost_minor as f64 / work_hours).round() as i64)
     } else {
         None
     };
-    let budget_remaining_minor = contracted_budget_minor - recognized_revenue_minor;
-    let headroom_vs_cost = contracted_budget_minor - total_cost_minor;
-    let hours_until_budget = match cost_per_work_hour_minor {
-        Some(rate) if rate > 0 && headroom_vs_cost > 0 => {
-            Some(headroom_vs_cost as f64 / rate as f64)
+    let budget_remaining_minor = contract_profit_minor;
+    let hours_until_budget = match (cost_per_work_hour_minor, budget_remaining_minor) {
+        (Some(rate), Some(remaining)) if rate > 0 && remaining > 0 => {
+            Some(remaining as f64 / rate as f64)
         }
         _ => None,
     };
@@ -109,6 +137,10 @@ pub fn compute_project_financials(
         other_expenses_minor,
         subscription_allocation_minor,
         total_cost_minor,
+        contract_profit_minor,
+        contract_margin_pct,
+        ai_of_contract_pct,
+        labor_of_contract_pct,
         economic_profit_minor,
         cash_flow_minor,
         profit_margin_pct,
@@ -152,30 +184,38 @@ mod tests {
     }
 
     #[test]
-    fn economic_vs_cash_distinction() {
+    fn contract_profit_includes_labor_ai_and_other() {
         let f = compute_project_financials(
             "USD",
-            120_000,
+            120_000, // contracted payment
             70_000,
             50_000,
-            10_000, // labor imputed
-            2_000,
-            1_000,
-            500,
+            10_000, // labor expense
+            2_000,  // AI allocation
+            1_000,  // other
+            500,    // subscription alloc
             3_600_000,
         );
         assert_eq!(f.total_cost_minor, 13_500);
+        // Primary P/L vs contracted payment
+        assert_eq!(f.contract_profit_minor, Some(120_000 - 13_500));
+        assert_eq!(f.budget_remaining_minor, Some(120_000 - 13_500));
         assert_eq!(f.economic_profit_minor, 70_000 - 13_500);
-        // Cash ignores imputed labor
-        assert_eq!(f.cash_flow_minor, 50_000 - (2_000 + 1_000 + 500));
-        assert!(f.profit_margin_pct.unwrap() > 0.0);
-        assert_eq!(f.budget_remaining_minor, 120_000 - 70_000);
+        // Labor is included in expenses for cash P/L too
+        assert_eq!(f.cash_flow_minor, 50_000 - 13_500);
+        assert!(f.contract_margin_pct.unwrap() > 80.0);
+        assert!(f.ai_of_contract_pct.unwrap() > 0.0);
+        assert!(f.labor_of_contract_pct.unwrap() > 0.0);
     }
 
     #[test]
-    fn margin_none_when_no_revenue() {
-        let f = compute_project_financials("USD", 0, 0, 0, 100, 0, 0, 0, 0);
+    fn expenses_without_contract_are_tracked_but_pl_is_na() {
+        let f = compute_project_financials("USD", 0, 0, 0, 100, 50_000, 0, 0, 0);
+        assert_eq!(f.total_cost_minor, 50_100); // labor + AI still counted
+        assert_eq!(f.contract_profit_minor, None);
+        assert_eq!(f.budget_remaining_minor, None);
         assert_eq!(f.profit_margin_pct, None);
+        assert_eq!(f.contract_margin_pct, None);
         assert_eq!(f.hours_until_budget, None);
     }
 

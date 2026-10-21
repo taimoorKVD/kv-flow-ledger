@@ -108,11 +108,17 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
           hint="Labor + AI allocation + other costs"
         />
         <Kpi
-          label="Estimated project margin"
+          label="Contract margin"
           icon={<TrendingUp className="h-4 w-4 text-accent" />}
           value={margin(dashboard.margin_pct)}
-          hint="Based on recognized revenue, not budget"
-          valueClass={dashboard.profit_minor < 0 ? "red" : "green"}
+          hint="Requires contracted payment; expenses still tracked without it"
+          valueClass={
+            dashboard.profit_minor == null
+              ? undefined
+              : dashboard.profit_minor < 0
+                ? "red"
+                : "green"
+          }
         />
       </div>
 
@@ -139,14 +145,29 @@ export default function OverviewPage({ onRefresh }: { onRefresh: () => Promise<v
           </div>
           <div className="mt-7 grid grid-cols-2 gap-4 border-t border-stroke pt-5">
             <div>
-              <div className="tiny">Recognized revenue</div>
-              <div className="mt-1 text-xl font-bold">{money(dashboard.recognized_revenue_minor, dashboard.currency)}</div>
+              <div className="tiny">Total expenses (labor + AI + other)</div>
+              <div className="mt-1 text-xl font-bold">
+                {money(dashboard.allocated_cost_minor, dashboard.currency)}
+              </div>
             </div>
             <div>
-              <div className="tiny">Profit / loss to date</div>
-              <div className={`mt-1 text-xl font-bold ${dashboard.profit_minor < 0 ? "red" : "green"}`}>
-                {money(dashboard.profit_minor, dashboard.currency)}
+              <div className="tiny">Contract profit / loss</div>
+              <div
+                className={`mt-1 text-xl font-bold ${
+                  dashboard.profit_minor == null
+                    ? ""
+                    : dashboard.profit_minor < 0
+                      ? "red"
+                      : "green"
+                }`}
+              >
+                {dashboard.profit_minor == null
+                  ? "N/A"
+                  : money(dashboard.profit_minor, dashboard.currency)}
               </div>
+              {dashboard.profit_minor == null && (
+                <p className="tiny mt-1">Enter total payment on the project to compute P/L</p>
+              )}
             </div>
           </div>
         </div>
